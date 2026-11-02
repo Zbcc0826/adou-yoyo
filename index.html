@@ -450,7 +450,7 @@ function pushTale(tale) {
   taleQ.push(...steps);
 }
 
-/** 三国事件的字幕。样式接近天意播报，多一行事件名 */
+/** 三国事件的字幕。样式接近天意播报，多一行事件名。停留 3 秒 */
 function showTale(title, line) {
   const spot = announceAt(0, -56, true);
   floaters.push({
@@ -460,7 +460,7 @@ function showTale(title, line) {
     x: spot.x,
     y: spot.y,
     vy: -4,
-    life: 1.15,
+    life: 3,
     age: 0,
     size: 22,
     color: "#fff6d8"
@@ -1551,7 +1551,9 @@ function drawFx() {
 /** 播报画在界面卡片之上，避免被说明和持仓挡住 */
 function drawFloaters() {
   for (const f of floaters) {
-    const a = 1 - f.age / f.life;
+    const a = f.banner
+      ? Math.min(1, (f.life - f.age) / 0.4)
+      : 1 - f.age / f.life;
     ctx.globalAlpha = Math.max(0, a);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
