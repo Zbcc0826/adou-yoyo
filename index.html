@@ -546,16 +546,25 @@ function beginSplat() {
     size: 54,
     color: "#ffe7a3"
   });
+  const fallMsg = announceAt(0, 0);
   floaters.push({
     text: `跌 ${Math.abs(slamPct).toFixed(1)}%`,
-    x: W * 0.5,
-    y: 108,
-    vy: -18,
+    x: fallMsg.x,
+    y: fallMsg.y,
+    vy: -8,
     life: 1.65,
     age: 0,
     size: 42,
     color: "#3dde9a"
   });
+}
+
+/** 播报位置。手机上顶栏和说明卡会挡住画面上沿，所以落在卡片下面 */
+function announceAt(dx, dy) {
+  const clearTop = W >= 980 ? 200 : 268;
+  const y = clamp(H * 0.5 + dy, clearTop, Math.max(clearTop, H - 120));
+  const x = clamp(W * 0.5 + dx, 72, Math.max(72, W - 72));
+  return { x, y };
 }
 
 /** 在地上躺一会儿 */
@@ -1232,12 +1241,17 @@ function drawFx() {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+}
+
+/** 播报画在界面卡片之上，避免被说明和持仓挡住 */
+function drawFloaters() {
   for (const f of floaters) {
     const a = 1 - f.age / f.life;
     ctx.globalAlpha = Math.max(0, a);
     ctx.fillStyle = f.color;
     ctx.font = `bold ${f.size}px Songti SC, STSong, PingFang SC, serif`;
     ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
     ctx.fillText(f.text, f.x, f.y);
   }
   ctx.globalAlpha = 1;
@@ -1376,14 +1390,15 @@ function sendHeaven() {
   heavenCount += 1;
   heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
   if (Math.random() < LIMIT_DOWN_P) heavenLimitDown = true;
+  const heavenMsg = announceAt(0, -36);
   floaters.push({
     text: "天意",
-    x: W * 0.5,
-    y: 92,
-    vy: -28,
-    life: 0.7,
+    x: heavenMsg.x,
+    y: heavenMsg.y,
+    vy: -10,
+    life: 0.9,
     age: 0,
-    size: 28,
+    size: 32,
     color: "#ffe7a3"
   });
   sfxHeaven();
@@ -1396,14 +1411,15 @@ function addPosition() {
   if (!(px > 0)) return;
   avgCost = (avgCost * shares + px * ADD_SHARES) / (shares + ADD_SHARES);
   shares += ADD_SHARES;
+  const addMsg = announceAt(0, 36);
   floaters.push({
     text: "加仓",
-    x: 120,
-    y: 150,
-    vy: -24,
-    life: 0.7,
+    x: addMsg.x,
+    y: addMsg.y,
+    vy: -10,
+    life: 0.9,
     age: 0,
-    size: 22,
+    size: 30,
     color: "#ffd27a"
   });
   sfxAdd();
@@ -1417,10 +1433,32 @@ let audioCtx = null;
 let musicGain = null;
 let musicOn = false;
 let musicVol = 0.4;
-let noteAt = 0;
-let tuneI = 0;
-/** 自写的五声音阶句，循环播放 */
-const TUNE = [349.23, 392, 440, 523.25, 440, 392, 329.63, 293.66, 329.63, 392, 440, 349.23];
+/** 宫商角徵羽，相对宫音的半音。传统大调五声，没有清角、变宫 */
+const PENTA = [0, 2, 4, 7, 9];
+const GONG_HZ = 392;
+const BEAT = 0.46;
+/**
+ * 节奏型，单位是拍。负数是休止。
+ * 大多按顺序循环，偶尔跳到另一型。
+ */
+const RHYTHM = [
+  [1, 1, 1, 1],
+  [1.5, 0.5, 1, 1],
+  [0.5, 0.5, 1, 2],
+  [2, 0.5, 0.5, 1],
+  [1, 0.5, 0.5, 0.5, 0.5, 1],
+  [0.5, 0.5, 0.5, 0.5, 2],
+  [1, 1, 2],
+  [3, 1],
+  [1, -0.5, 0.5, 1, 1],
+  [0.75, 0.25, 0.5, 0.5, 1, 1],
+  [2, 1, 0.5, 0.5],
+  [0.5, 1, 0.5, 2]
+];
+let phrase = [];
+let rhythmIx = 0;
+let degree = 0;
+let scheduledUntil = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1458,35 +1496,85 @@ function ensureMusic() {
     filter.connect(rain);
     rain.connect(musicGain);
     src.start();
-    noteAt = performance.now();
+    scheduledUntil = 0;
+    phrase = [];
   }
   if (audioCtx.state === "suspended") audioCtx.resume();
   applyMusicGain();
 }
 
-/** 弹出一个短音，连成上面那句旋律 */
-function playTuneNote(freq) {
-  if (!audioCtx || !musicGain) return;
+/** 五声音级换成频率。0 是宫，4 是羽，5 起进入高一个宫 */
+function freqOf(deg) {
+  const oct = Math.floor(deg / 5);
+  const i = ((deg % 5) + 5) % 5;
+  return GONG_HZ * Math.pow(2, oct + PENTA[i] / 12);
+}
+
+/** 下一句：节奏型半循环，音高在五声里小步走，句尾回到宫 */
+function pushPhrase() {
+  if (Math.random() < 0.72) rhythmIx = (rhythmIx + 1) % RHYTHM.length;
+  else rhythmIx = Math.floor(Math.random() * RHYTHM.length);
+  const cell = RHYTHM[rhythmIx];
+  const reps = Math.random() < 0.62 ? 2 : 1;
+  degree = Math.random() < 0.7 ? 0 : 3;
+  const built = [];
+  for (let r = 0; r < reps; r++) {
+    for (const beats of cell) {
+      if (beats < 0) {
+        built.push({ rest: true, beats: -beats });
+        continue;
+      }
+      const roll = Math.random();
+      let step = 0;
+      if (roll < 0.4) step = 1;
+      else if (roll < 0.68) step = -1;
+      else if (roll < 0.8) step = 2;
+      else if (roll < 0.9) step = -2;
+      else if (roll < 0.96) step = 3;
+      degree += step;
+      if (degree > 5) degree -= 5;
+      if (degree < -2) degree += 5;
+      built.push({ rest: false, beats, degree });
+    }
+  }
+  for (let i = built.length - 1; i >= 0; i--) {
+    if (!built[i].rest) {
+      built[i].degree = 0;
+      break;
+    }
+  }
+  phrase.push(...built);
+  phrase.push({ rest: true, beats: 0.5 + Math.random() * 0.5 });
+}
+
+/** 按这颗音的时值收束，短音不拖成一片 */
+function playTuneNoteAt(when, freq, dur) {
   const osc = audioCtx.createOscillator();
   const g = audioCtx.createGain();
   osc.type = "triangle";
-  osc.frequency.value = freq;
-  const now = audioCtx.currentTime;
-  g.gain.setValueAtTime(0.0001, now);
-  g.gain.exponentialRampToValueAtTime(0.09, now + 0.04);
-  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
+  osc.frequency.setValueAtTime(freq, when);
+  const hold = Math.max(0.06, dur * 0.86);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(dur >= BEAT * 1.4 ? 0.07 : 0.085, when + Math.min(0.03, hold * 0.35));
+  g.gain.exponentialRampToValueAtTime(0.0001, when + hold);
   osc.connect(g);
   g.connect(musicGain);
-  osc.start(now);
-  osc.stop(now + 0.64);
+  osc.start(when);
+  osc.stop(when + hold + 0.02);
 }
 
-function updateMusic(now) {
+/** 往前排两秒左右的旋律。声音关掉时不排，避免积一长串 */
+function updateMusic() {
   if (!musicOn || !audioCtx) return;
-  if (now < noteAt) return;
-  noteAt = now + 680;
-  playTuneNote(TUNE[tuneI % TUNE.length]);
-  tuneI += 1;
+  const now = audioCtx.currentTime;
+  if (scheduledUntil < now + 0.02) scheduledUntil = now + 0.05;
+  while (scheduledUntil < now + 2.2) {
+    if (!phrase.length) pushPhrase();
+    const n = phrase.shift();
+    const dur = Math.max(0.05, n.beats * BEAT);
+    if (!n.rest) playTuneNoteAt(scheduledUntil, freqOf(n.degree), dur);
+    scheduledUntil += dur;
+  }
 }
 
 /**
@@ -1615,6 +1703,7 @@ function draw(now) {
   }
   ctx.restore();
   drawHud(now);
+  drawFloaters();
 }
 
 /** 适配窗口和视网膜屏。高度去掉底部操作条，地面仍留在画面里 */
