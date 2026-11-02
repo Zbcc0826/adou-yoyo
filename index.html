@@ -1781,20 +1781,52 @@ let phrase = [];
 let degree = 0;
 let scheduledUntil = 0;
 /**
- * 传统曲子里反复出现的五声和弦。
- * 宫=宫角徵，徵=徵宫商，羽=羽宫角，商=商徵羽。
+ * 五声里常见的双音，按名曲的走向排好。
+ * 比较时不分上下位置：宫徵和徵宫算同一对。同一对最多连着两次。
  */
-const CHORDS = {
-  gong: [0, 2, 3],
-  zhi: [3, 0, 1],
-  yu: [4, 0, 2],
-  shang: [1, 3, 4]
-};
+const DYAD_RUN = [
+  [0, 3],
+  [0, 2],
+  [3, 1],
+  [1, 4],
+  [4, 2],
+  [2, 3],
+  [4, 0],
+  [1, 3],
+  [2, 0],
+  [4, 1]
+];
+let dyadIx = 0;
+let dyadStreak = 0;
+let lastDyadKey = "";
+
+/** 把一对音收成与顺序无关的标记 */
+function dyadKey(pair) {
+  return pair[0] < pair[1] ? pair[0] + "," + pair[1] : pair[1] + "," + pair[0];
+}
+
+/** 下一对双音。已经连用两次的，跳到下一对不一样的 */
+function nextDyad() {
+  let pair = DYAD_RUN[dyadIx % DYAD_RUN.length];
+  let key = dyadKey(pair);
+  let guard = 0;
+  while (key === lastDyadKey && dyadStreak >= 2 && guard < DYAD_RUN.length) {
+    dyadIx += 1;
+    pair = DYAD_RUN[dyadIx % DYAD_RUN.length];
+    key = dyadKey(pair);
+    guard += 1;
+  }
+  dyadIx += 1;
+  dyadStreak = key === lastDyadKey ? dyadStreak + 1 : 1;
+  lastDyadKey = key;
+  return pair.slice();
+}
 /**
  * 四首曲子按套曲顺序接，不中途抽签。
  * steps 是五声音级的音程：1 级进，2 小跳后必须反向级进。
  * 春江是流水级进，梅花同一动机连奏三遍，阳关以长音叠三次，茉莉先跳进再级进下行。
- * repeat 的几遍共用一个和弦；lift 是第三遍前的级进爬高；tail 是叠句末尾的长音，不是休止。
+ * repeat 的几遍旋律相同，但每一遍换一对双音，同一对最多连着两次。
+ * lift 是第三遍前的级进爬高；tail 是叠句末尾的长音，不是休止。
  */
 const TUNES = [
   {
@@ -1875,7 +1907,6 @@ function ensureMusic() {
     filter.connect(rain);
     rain.connect(musicGain);
     src.start();
-    startDrone();
     scheduledUntil = 0;
     phrase = [];
   }
@@ -1888,18 +1919,6 @@ function freqOf(deg) {
   const oct = Math.floor(deg / 5);
   const i = ((deg % 5) + 5) % 5;
   return GONG_HZ * Math.pow(2, oct + PENTA[i] / 12);
-}
-
-/** 只留很轻的一根低音宫，和弦进行另铺 */
-function startDrone() {
-  const bed = audioCtx.createGain();
-  bed.gain.value = 0.003;
-  bed.connect(musicGain);
-  const osc = audioCtx.createOscillator();
-  osc.type = "sine";
-  osc.frequency.value = GONG_HZ / 2;
-  osc.connect(bed);
-  osc.start();
 }
 
 /** 级进。走出音域就折返一级，不跳八度 */
@@ -1929,7 +1948,7 @@ function spellLine(beats, steps, start) {
 
 /**
  * 把计划里的一句展开成连续的音。
- * 重复用同一串音高，避免每遍重新随机；第三遍要是爬高，也先级进过去。
+ * 重复用同一串音高；每一遍换一对双音，不让同一对垫太久。
  */
 function expandItem(item) {
   const repeats = item.repeat || 1;
@@ -1939,27 +1958,46 @@ function expandItem(item) {
     const lastRepeat = r === repeats - 1;
     if (lastRepeat && repeats > 1 && item.lift) {
       let cursor = out.length ? out[out.length - 1].degree : degree;
+      const bridge = [];
       for (let k = 0; k < item.lift; k++) {
         cursor = clampStep(cursor, 1);
-        out.push({ rest: false, beats: 0.5, degree: cursor });
+        bridge.push({ rest: false, beats: 0.5, degree: cursor });
       }
-      const lifted = spellLine(item.beats, item.steps, cursor);
-      out.push(...lifted);
+      bridge[0].padChord = nextDyad();
+      out.push(...bridge, ...spellLine(item.beats, item.steps, cursor));
     } else {
-      out.push(...motif.map((n) => ({ rest: false, beats: n.beats, degree: n.degree })));
+      const played = motif.map((n) => ({ rest: false, beats: n.beats, degree: n.degree }));
+      played[0].padChord = nextDyad();
+      out.push(...played);
     }
   }
   if (item.tail) {
     const hold = out[out.length - 1].degree;
     for (const beats of item.tail) out.push({ rest: false, beats, degree: hold });
   }
-  const root = CHORDS[item.chord][0];
+  let root = 0;
+  for (const n of out) if (n.padChord) root = n.padChord[0];
   const last = out[out.length - 1];
   const prev = out.length > 1 ? out[out.length - 2].degree : last.degree;
   const delta = root - last.degree;
   if (delta !== 0) {
     const want = last.degree + Math.sign(delta);
     if (want >= DEG_LO && want <= DEG_HI && Math.abs(want - prev) <= 2) last.degree = want;
+  }
+  let i = 0;
+  while (i < out.length) {
+    if (!out[i].padChord) {
+      i += 1;
+      continue;
+    }
+    let beats = 0;
+    let j = i;
+    while (j < out.length && (j === i || !out[j].padChord)) {
+      beats += out[j].beats;
+      j += 1;
+    }
+    out[i].padBeats = beats;
+    i = j;
   }
   degree = last.degree;
   return out;
@@ -1970,9 +2008,6 @@ function pushPhrase() {
   const tune = TUNES[tuneIx % TUNES.length];
   const item = tune.plan[planIx];
   const notes = expandItem(item);
-  const totalBeats = notes.reduce((sum, n) => sum + n.beats, 0);
-  notes[0].padBeats = totalBeats;
-  notes[0].padChord = CHORDS[item.chord];
   for (const n of notes) n.voice = "flute";
   phrase.push(...notes);
   planIx += 1;
@@ -2039,10 +2074,10 @@ function playVoice(when, freq, dur) {
 let padHz = null;
 let lastChordKey = "";
 
-/** 按当前曲子的和弦铺三个很轻的音。同一和弦续着，换和弦时慢慢叠过去 */
+/** 按当前这对双音铺两个很轻的音。同一对续着，换一对时慢慢叠过去 */
 function playPad(when, dur, chord) {
-  const tones = chord && chord.length ? chord : [0, 2, 3];
-  const key = tones.join(",");
+  const tones = chord && chord.length ? chord.slice(0, 2) : [0, 3];
+  const key = dyadKey(tones);
   const cont = key === lastChordKey;
   lastChordKey = key;
   const base = tones.map((deg) => freqOf(deg) / 2);
