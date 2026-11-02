@@ -12,11 +12,62 @@
     overflow: hidden;
     user-select: none;
   }
-  canvas { display: block; width: 100%; height: 100%; }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  canvas {
+    display: block;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+  }
+  /* 底部操作条。按钮给触屏用，不挡住地面 */
+  #dock {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    background: #0c121c;
+    border-top: 1px solid rgba(255, 231, 163, 0.18);
+    touch-action: manipulation;
+  }
+  #dock button {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    min-height: 44px;
+    padding: 0 16px;
+    font: 600 15px/1 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    color: #1a1204;
+    background: #ffe7a3;
+  }
+  #dock button.ghost {
+    color: #ffe7a3;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px rgba(255, 231, 163, 0.45);
+  }
+  #dock .vol {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #d7e0ea;
+    font: 13px "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  #dock input[type="range"] { width: 108px; }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
+<div id="dock">
+  <button type="button" id="btn-heaven">输送天意</button>
+  <button type="button" id="btn-add">加仓</button>
+  <button type="button" id="btn-music" class="ghost">音乐关</button>
+  <label class="vol">音量 <input id="vol" type="range" min="0" max="100" value="40"></label>
+</div>
 <script>
 "use strict";
 
@@ -1269,7 +1320,7 @@ function drawHud(now) {
 /** 操作说明。不展示行情阶段 */
 function drawHelp() {
   const lines = [
-    ["↑", "输送天意", "提高下一根上涨概率，每次另有极小概率跌停"],
+    ["↑", "输送天意", "略微提高上涨概率"],
     ["空格", "加仓", "按现价买入 200 股，摊薄成本"]
   ];
   ctx.textAlign = "left";
@@ -1307,7 +1358,7 @@ function drawAccount(price) {
   ctx.fill();
   ctx.fillStyle = "#d7e0ea";
   ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  const boostText = heavenBoost > 0 ? `    下根 +${Math.round(heavenBoost * 100)}%` : "";
+  const boostText = heavenBoost > 0 ? `    +${Math.round(heavenBoost * 100)}%` : "";
   ctx.fillText(`输送天意  ${heavenCount} 次${boostText}`, 26, 84);
   ctx.fillStyle = "rgba(215,224,234,0.78)";
   ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
@@ -1317,28 +1368,26 @@ function drawAccount(price) {
   ctx.fillText(`总盈亏  ${sign}${pnl.toFixed(2)}    ${sign}${(pnlPct * 100).toFixed(2)}%`, 26, 126);
 }
 
-/** 上方向键输送天意，空格按现价小幅加仓。按住不连发 */
-function onKeyDown(e) {
-  if (e.repeat) return;
-  if (e.key === "ArrowUp") {
-    e.preventDefault();
-    heavenCount += 1;
-    heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
-    if (Math.random() < LIMIT_DOWN_P) heavenLimitDown = true;
-    floaters.push({
-      text: "天意",
-      x: W * 0.5,
-      y: 92,
-      vy: -28,
-      life: 0.7,
-      age: 0,
-      size: 28,
-      color: "#ffe7a3"
-    });
-    return;
-  }
-  if (e.key !== " " || shares <= 0) return;
-  e.preventDefault();
+/** 输送天意。键盘和底部按钮都走这里，按住不连发由调用方保证 */
+function sendHeaven() {
+  heavenCount += 1;
+  heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
+  if (Math.random() < LIMIT_DOWN_P) heavenLimitDown = true;
+  floaters.push({
+    text: "天意",
+    x: W * 0.5,
+    y: 92,
+    vy: -28,
+    life: 0.7,
+    age: 0,
+    size: 28,
+    color: "#ffe7a3"
+  });
+}
+
+/** 按现价加一笔仓，把成本往现价摊 */
+function addPosition() {
+  if (shares <= 0) return;
   const px = forming ? forming.live : lastClose;
   if (!(px > 0)) return;
   avgCost = (avgCost * shares + px * ADD_SHARES) / (shares + ADD_SHARES);
@@ -1353,6 +1402,105 @@ function onKeyDown(e) {
     size: 22,
     color: "#ffd27a"
   });
+}
+
+/**
+ * 原创秋雨循环，只用网页音频合成，不附带任何歌曲录音。
+ * musicOn 为关时总音量为 0；滑块改的是开着时候的音量。
+ */
+let audioCtx = null;
+let musicGain = null;
+let musicOn = false;
+let musicVol = 0.4;
+let noteAt = 0;
+let tuneI = 0;
+/** 自写的五声音阶句，循环播放 */
+const TUNE = [349.23, 392, 440, 523.25, 440, 392, 329.63, 293.66, 329.63, 392, 440, 349.23];
+
+function applyMusicGain() {
+  if (!musicGain || !audioCtx) return;
+  musicGain.gain.setTargetAtTime(musicOn ? musicVol : 0, audioCtx.currentTime, 0.04);
+}
+
+/** 第一次操作时才创建音频，避开浏览器对自动播放的限制 */
+function ensureMusic() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = new Ctx();
+    musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0;
+    musicGain.connect(audioCtx.destination);
+    const seconds = 2;
+    const count = Math.floor(audioCtx.sampleRate * seconds);
+    const buffer = audioCtx.createBuffer(1, count, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let brown = 0;
+    for (let i = 0; i < count; i++) {
+      brown = (brown + (Math.random() * 2 - 1) * 0.04) * 0.98;
+      data[i] = brown;
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 900;
+    const rain = audioCtx.createGain();
+    rain.gain.value = 0.55;
+    src.connect(filter);
+    filter.connect(rain);
+    rain.connect(musicGain);
+    src.start();
+    noteAt = performance.now();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  applyMusicGain();
+}
+
+/** 弹出一个短音，连成上面那句旋律 */
+function playTuneNote(freq) {
+  if (!audioCtx || !musicGain) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  const now = audioCtx.currentTime;
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.09, now + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
+  osc.connect(g);
+  g.connect(musicGain);
+  osc.start(now);
+  osc.stop(now + 0.64);
+}
+
+function updateMusic(now) {
+  if (!musicOn || !audioCtx) return;
+  if (now < noteAt) return;
+  noteAt = now + 680;
+  playTuneNote(TUNE[tuneI % TUNE.length]);
+  tuneI += 1;
+}
+
+function syncMusicButton() {
+  const btn = document.getElementById("btn-music");
+  btn.textContent = musicOn ? "音乐开" : "音乐关";
+  btn.classList.toggle("ghost", !musicOn);
+  btn.setAttribute("aria-pressed", musicOn ? "true" : "false");
+}
+
+/** 上方向键输送天意，空格按现价小幅加仓。按住不连发 */
+function onKeyDown(e) {
+  if (e.repeat) return;
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    sendHeaven();
+    return;
+  }
+  if (e.key !== " ") return;
+  e.preventDefault();
+  addPosition();
 }
 
 /** 整帧 */
@@ -1378,11 +1526,12 @@ function draw(now) {
   drawHud(now);
 }
 
-/** 适配窗口和视网膜屏 */
+/** 适配窗口和视网膜屏。高度去掉底部操作条，地面仍留在画面里 */
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth;
-  H = window.innerHeight;
+  const rect = canvas.getBoundingClientRect();
+  W = Math.max(1, rect.width);
+  H = Math.max(1, rect.height);
   canvas.width = Math.round(W * dpr);
   canvas.height = Math.round(H * dpr);
   canvas.style.width = W + "px";
@@ -1403,10 +1552,25 @@ function frame(now) {
   const dt = Math.min(0.033, (now - last) / 1000);
   last = now;
   update(dt, now);
+  updateMusic(now);
   draw(now);
   requestAnimationFrame(frame);
 }
 
+document.getElementById("btn-heaven").addEventListener("click", sendHeaven);
+document.getElementById("btn-add").addEventListener("click", addPosition);
+document.getElementById("btn-music").addEventListener("click", () => {
+  musicOn = !musicOn;
+  syncMusicButton();
+  if (musicOn) ensureMusic();
+  else applyMusicGain();
+});
+document.getElementById("vol").addEventListener("input", (e) => {
+  musicVol = Number(e.target.value) / 100;
+  if (musicOn) ensureMusic();
+  else applyMusicGain();
+});
+syncMusicButton();
 resize();
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", onKeyDown);
