@@ -1772,35 +1772,15 @@ let musicVol = 0.4;
 const PENTA = [0, 2, 4, 7, 9];
 const GONG_HZ = 392;
 const BEAT = 0.46;
-/**
- * 节奏型，单位是拍。负数是休止。
- * 大多按顺序循环，偶尔跳到另一型。
- */
-const RHYTHM = [
-  [1, 1, 1, 1],
-  [1.5, 0.5, 1, 1],
-  [0.5, 0.5, 1, 2],
-  [2, 0.5, 0.5, 1],
-  [1, 0.5, 0.5, 0.5, 0.5, 1],
-  [0.5, 0.5, 0.5, 0.5, 2],
-  [1, 1, 2],
-  [3, 1],
-  [1, -0.5, 0.5, 1, 1],
-  [0.75, 0.25, 0.5, 0.5, 1, 1],
-  [2, 1, 0.5, 0.5],
-  [0.5, 1, 0.5, 2]
-];
+/** 旋律音域。只在这一段里走，不靠八度折返制造跳跃 */
+const DEG_LO = -1;
+const DEG_HI = 5;
 let phrase = [];
-let rhythmIx = 0;
 let degree = 0;
 let scheduledUntil = 0;
-/** 笛、箫、筝轮流当主奏，避免从头到尾同一种跳音 */
-const VOICES = ["flute", "xiao", "zheng"];
-let voiceIx = 0;
 /**
  * 传统曲子里反复出现的五声和弦。
  * 宫=宫角徵，徵=徵宫商，羽=羽宫角，商=商徵羽。
- * 春江花月夜、梅花三弄、阳关三叠、茉莉花各用自己的进行。
  */
 const CHORDS = {
   gong: [0, 2, 3],
@@ -1808,14 +1788,58 @@ const CHORDS = {
   yu: [4, 0, 2],
   shang: [1, 3, 4]
 };
+/**
+ * 四首曲子按套曲顺序接，不中途抽签。
+ * steps 是五声音级的音程：1 级进，2 小跳后必须反向级进。
+ * 春江是流水级进，梅花同一动机连奏三遍，阳关以长音叠三次，茉莉先跳进再级进下行。
+ * repeat 的几遍共用一个和弦；lift 是第三遍前的级进爬高；tail 是叠句末尾的长音，不是休止。
+ */
 const TUNES = [
-  { name: "春江", seq: ["zhi", "gong", "yu", "zhi", "gong"] },
-  { name: "梅花", seq: ["gong", "shang", "zhi", "gong"] },
-  { name: "阳关", seq: ["yu", "shang", "yu", "gong"] },
-  { name: "茉莉", seq: ["gong", "zhi", "gong", "yu", "gong"] }
+  {
+    name: "春江",
+    voice: "flute",
+    plan: [
+      { chord: "zhi", beats: [1, 0.5, 0.5, 1, 1, 0.5, 0.5, 2], steps: [1, 1, -1, 1, 2, -1, -1] },
+      { chord: "gong", beats: [0.5, 0.5, 1, 0.5, 0.5, 1, 1, 2], steps: [-1, 1, 1, -1, -1, 1, -1] },
+      { chord: "yu", beats: [1, 1, 0.5, 0.5, 1, 1, 2], steps: [1, -1, 1, -1, -1, 0] },
+      { chord: "zhi", beats: [1, 0.5, 0.5, 1, 1, 2], steps: [1, 1, -1, -1, -1] },
+      { chord: "gong", beats: [1, 1, 1, 1, 2, 2], steps: [-1, 1, -1, -1, 0] }
+    ]
+  },
+  {
+    name: "梅花",
+    voice: "zheng",
+    plan: [
+      { chord: "gong", beats: [1, 0.5, 0.5, 2], steps: [1, -1, 0], repeat: 3, lift: 1 },
+      { chord: "shang", beats: [1, 1, 2], steps: [-1, 1], repeat: 3 },
+      { chord: "zhi", beats: [0.5, 0.5, 1, 2], steps: [1, -1, 0], repeat: 3, lift: 1 },
+      { chord: "gong", beats: [1, 1, 2, 2], steps: [-1, -1, 0] }
+    ]
+  },
+  {
+    name: "茉莉",
+    voice: "flute",
+    plan: [
+      { chord: "gong", beats: [0.5, 0.5, 1, 0.5, 0.5, 1, 2], steps: [2, -1, -1, 1, -1, -1] },
+      { chord: "zhi", beats: [0.5, 0.5, 1, 1, 1, 2], steps: [1, 1, -1, 0, -1] },
+      { chord: "gong", beats: [1, 0.5, 0.5, 1, 0.5, 0.5, 2], steps: [-1, 1, 1, -1, -1, 0] },
+      { chord: "yu", beats: [0.5, 0.5, 1, 0.5, 0.5, 1, 2], steps: [1, -1, 1, -1, -1, 0] },
+      { chord: "gong", beats: [1, 1, 1, 1, 2, 2], steps: [-1, -1, 1, -1, 0] }
+    ]
+  },
+  {
+    name: "阳关",
+    voice: "xiao",
+    plan: [
+      { chord: "yu", beats: [2, 1, 1, 2], steps: [1, -1, 1], repeat: 3, tail: [2, 2] },
+      { chord: "shang", beats: [2, 2, 1, 1], steps: [-1, 1, -1], repeat: 3, tail: [2] },
+      { chord: "yu", beats: [1, 1, 2, 2], steps: [1, 1, -1], repeat: 3, tail: [2, 2] },
+      { chord: "gong", beats: [2, 1, 1, 2], steps: [-1, -1, 0], repeat: 3, tail: [2, 2] }
+    ]
+  }
 ];
 let tuneIx = 0;
-let chordIx = 0;
+let planIx = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1880,89 +1904,97 @@ function startDrone() {
   osc.start();
 }
 
-/** 把音高收到当前和弦里，经过音仍允许小步离开 */
-function nearestInChord(deg, chord) {
-  let best = chord[0];
-  let bestD = 99;
-  for (const tone of chord) {
-    for (const shift of [-5, 0, 5]) {
-      const cand = tone + shift;
-      const dist = Math.abs(cand - deg);
-      if (dist < bestD) {
-        bestD = dist;
-        best = cand;
-      }
-    }
+/** 级进。走出音域就折返一级，不跳八度 */
+function clampStep(deg, step) {
+  const next = deg + step;
+  if (next > DEG_HI || next < DEG_LO) {
+    const back = deg - Math.sign(step || 1);
+    if (back <= DEG_HI && back >= DEG_LO) return back;
+    return deg;
   }
-  return Math.max(-2, Math.min(5, best));
+  return next;
 }
 
-function nextChord() {
-  const tune = TUNES[tuneIx % TUNES.length];
-  const chord = CHORDS[tune.seq[chordIx % tune.seq.length]];
-  chordIx += 1;
-  if (chordIx >= tune.seq.length) {
-    chordIx = 0;
-    if (Math.random() < 0.45) tuneIx = (tuneIx + 1) % TUNES.length;
+/** 按音程表写出一句。小跳之后的下一音强制反向级进 */
+function spellLine(beats, steps, start) {
+  const notes = [{ rest: false, beats: beats[0], degree: start }];
+  let prev = 0;
+  for (let i = 0; i < steps.length; i++) {
+    let step = steps[i];
+    if (Math.abs(prev) >= 2) step = prev > 0 ? -1 : 1;
+    const next = clampStep(notes[notes.length - 1].degree, step);
+    prev = next - notes[notes.length - 1].degree;
+    notes.push({ rest: false, beats: beats[i + 1], degree: next });
   }
-  return chord;
-}
-
-/** 下一句：节奏型半循环，音高在五声里小步走，句尾回到宫 */
-function pushPhrase() {
-  if (Math.random() < 0.72) rhythmIx = (rhythmIx + 1) % RHYTHM.length;
-  else rhythmIx = Math.floor(Math.random() * RHYTHM.length);
-  const cell = RHYTHM[rhythmIx];
-  const reps = Math.random() < 0.62 ? 2 : 1;
-  const voice = VOICES[voiceIx % VOICES.length];
-  voiceIx += 1;
-  const chord = nextChord();
-  degree = chord[0];
-  const built = [];
-  for (let r = 0; r < reps; r++) {
-    for (const beats of cell) {
-      if (beats < 0) {
-        built.push({ rest: true, beats: -beats, voice });
-        continue;
-      }
-      const roll = Math.random();
-      let step = 0;
-      if (roll < 0.4) step = 1;
-      else if (roll < 0.68) step = -1;
-      else if (roll < 0.8) step = 2;
-      else if (roll < 0.9) step = -2;
-      else if (roll < 0.96) step = 3;
-      degree += step;
-      if (degree > 5) degree -= 5;
-      if (degree < -2) degree += 5;
-      if (Math.random() < 0.62) degree = nearestInChord(degree, chord);
-      built.push({ rest: false, beats, degree, voice });
-    }
-  }
-  for (let i = built.length - 1; i >= 0; i--) {
-    if (!built[i].rest) {
-      built[i].degree = chord[0];
-      break;
-    }
-  }
-  const totalBeats = built.reduce((sum, n) => sum + n.beats, 0);
-  if (built.length) {
-    built[0].padBeats = totalBeats;
-    built[0].padChord = chord;
-  }
-  phrase.push(...built);
-  phrase.push({ rest: true, beats: 0.7, voice });
+  return notes;
 }
 
 /**
- * 一句底下的长音。笛偏亮，箫带一点泛音，筝是两根略微分开的弦。
- * 时值拖过下一颗音，避免一顿一顿地断开。
+ * 把计划里的一句展开成连续的音。
+ * 重复用同一串音高，避免每遍重新随机；第三遍要是爬高，也先级进过去。
+ */
+function expandItem(item) {
+  const repeats = item.repeat || 1;
+  const motif = spellLine(item.beats, item.steps, degree);
+  const out = [];
+  for (let r = 0; r < repeats; r++) {
+    const lastRepeat = r === repeats - 1;
+    if (lastRepeat && repeats > 1 && item.lift) {
+      let cursor = out.length ? out[out.length - 1].degree : degree;
+      for (let k = 0; k < item.lift; k++) {
+        cursor = clampStep(cursor, 1);
+        out.push({ rest: false, beats: 0.5, degree: cursor });
+      }
+      const lifted = spellLine(item.beats, item.steps, cursor);
+      out.push(...lifted);
+    } else {
+      out.push(...motif.map((n) => ({ rest: false, beats: n.beats, degree: n.degree })));
+    }
+  }
+  if (item.tail) {
+    const hold = out[out.length - 1].degree;
+    for (const beats of item.tail) out.push({ rest: false, beats, degree: hold });
+  }
+  const root = CHORDS[item.chord][0];
+  const last = out[out.length - 1];
+  const prev = out.length > 1 ? out[out.length - 2].degree : last.degree;
+  const delta = root - last.degree;
+  if (delta !== 0) {
+    const want = last.degree + Math.sign(delta);
+    if (want >= DEG_LO && want <= DEG_HI && Math.abs(want - prev) <= 2) last.degree = want;
+  }
+  degree = last.degree;
+  return out;
+}
+
+/** 下一句。同一首曲子走完才换下一首，中间不插休止 */
+function pushPhrase() {
+  const tune = TUNES[tuneIx % TUNES.length];
+  const item = tune.plan[planIx];
+  const notes = expandItem(item);
+  const totalBeats = notes.reduce((sum, n) => sum + n.beats, 0);
+  notes[0].padBeats = totalBeats;
+  notes[0].padChord = CHORDS[item.chord];
+  for (const n of notes) n.voice = tune.voice;
+  phrase.push(...notes);
+  planIx += 1;
+  if (planIx >= tune.plan.length) {
+    planIx = 0;
+    tuneIx = (tuneIx + 1) % TUNES.length;
+  }
+}
+
+/**
+ * 一句底下的长音。短音少用起音，让下一颗音接上，不要重新起一下。
+ * 笛偏亮，箫带一点泛音，筝是两根略微分开的弦。
  */
 function playVoice(when, freq, dur, voice) {
-  const attack = voice === "zheng" ? 0.05 : Math.min(0.26, Math.max(0.1, dur * 0.42));
-  const hold = dur * (voice === "zheng" ? 1.65 : 1.45);
-  const end = when + Math.max(hold, attack + 0.16);
-  const releaseAt = when + Math.max(attack + 0.06, hold * 0.7);
+  const attack = voice === "zheng"
+    ? Math.min(0.045, Math.max(0.02, dur * 0.18))
+    : Math.min(0.06, Math.max(0.018, dur * 0.22));
+  const hold = dur + (dur < 0.55 ? 0.1 : 0.14);
+  const end = when + hold;
+  const releaseAt = when + Math.max(attack + 0.04, hold * 0.72);
   const layers = voice === "xiao"
     ? [{ type: "sine", mul: 1, gain: 0.9 }, { type: "sine", mul: 2, gain: 0.08 }]
     : voice === "zheng"
@@ -1977,7 +2009,7 @@ function playVoice(when, freq, dur, voice) {
     const level = peak * layer.gain;
     g.gain.setValueAtTime(0.0001, when);
     g.gain.linearRampToValueAtTime(level, when + attack);
-    g.gain.linearRampToValueAtTime(Math.max(0.0002, level * 0.8), releaseAt);
+    g.gain.linearRampToValueAtTime(Math.max(0.0002, level * 0.82), releaseAt);
     g.gain.exponentialRampToValueAtTime(0.0001, end);
     osc.connect(g);
     g.connect(musicGain);
@@ -1986,19 +2018,44 @@ function playVoice(when, freq, dur, voice) {
   });
 }
 
-/** 按当前曲子的和弦铺三个很轻的音，音量保持在旋律下面 */
+/** 上一组和声的音高，换和弦时就近找八度，避免低音突然翻高 */
+let padHz = null;
+let lastChordKey = "";
+
+/** 按当前曲子的和弦铺三个很轻的音。同一和弦续着，换和弦时慢慢叠过去 */
 function playPad(when, dur, chord) {
   const tones = chord && chord.length ? chord : [0, 2, 3];
-  const end = when + dur + 0.35;
-  const mid = Math.min(end - 0.05, when + Math.max(0.35, dur * 0.65));
-  tones.forEach((deg, i) => {
+  const key = tones.join(",");
+  const cont = key === lastChordKey;
+  lastChordKey = key;
+  const base = tones.map((deg) => freqOf(deg) / 2);
+  const freqs = base.map((hz) => {
+    if (!padHz) return hz;
+    let best = hz;
+    let bestScore = Infinity;
+    for (const oct of [0.5, 1, 2]) {
+      const cand = hz * oct;
+      let score = Infinity;
+      for (const old of padHz) score = Math.min(score, Math.abs(Math.log2(cand / old)));
+      if (score < bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+    return best;
+  });
+  padHz = freqs.slice();
+  const end = when + dur + 0.6;
+  const mid = Math.min(end - 0.08, when + Math.max(0.4, dur * 0.7));
+  const attack = cont ? 0.06 : 0.5;
+  freqs.forEach((hz, i) => {
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(freqOf(deg) / 2, when);
+    osc.frequency.setValueAtTime(hz, when);
     const peak = i === 0 ? 0.0042 : 0.0024;
-    g.gain.setValueAtTime(0.0001, when);
-    g.gain.linearRampToValueAtTime(peak, when + 0.3);
+    g.gain.setValueAtTime(cont ? peak * 0.65 : 0.0001, when);
+    g.gain.linearRampToValueAtTime(peak, when + attack);
     g.gain.linearRampToValueAtTime(Math.max(0.0002, peak * 0.8), mid);
     g.gain.exponentialRampToValueAtTime(0.0001, end);
     osc.connect(g);
