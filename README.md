@@ -6,7 +6,7 @@
 
 打开这个网页即可，不用下载：
 
-https://zbcc0826.github.io/老实玩新三国梗很枯燥吧/
+https://zbcc0826.github.io/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/
 
 ## 操作
 
@@ -26,4 +26,4 @@ https://zbcc0826.github.io/老实玩新三国梗很枯燥吧/
 
 ## 关于 Release 里的 HTML
 
-[Release](https://github.com/Zbcc0826/老实玩新三国梗很枯燥吧/releases) 里可以附上 HTML 文件，方便下载保存。GitHub 会把它当成附件下发，微信和浏览器通常只会下载，不会当成网页打开。要在微信里直接试玩，用上面的 Pages 地址。
+[Release](https://github.com/Zbcc0826/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/releases) 里可以附上 HTML 文件，方便下载保存。GitHub 会把它当成附件下发，微信和浏览器通常只会下载，不会当成网页打开。要在微信里直接试玩，用上面的 Pages 地址。页面标题是「老实玩新三国梗很枯燥吧」。GitHub 的仓库地址不能用这句中文，所以地址用了拼音。
