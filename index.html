@@ -1569,7 +1569,8 @@ function freqOf(deg) {
 /** 低音宫和徵一直垫着，句子之间也不会空出一截 */
 function startDrone() {
   const bed = audioCtx.createGain();
-  bed.gain.value = 0.02;
+  // 低音只垫一层，音量压在旋律下面
+  bed.gain.value = 0.006;
   bed.connect(musicGain);
   [GONG_HZ / 2, (GONG_HZ / 2) * 1.004, freqOf(3) / 2].forEach((freq, i) => {
     const osc = audioCtx.createOscillator();
@@ -1664,8 +1665,8 @@ function playPad(when, dur) {
   osc.frequency.setValueAtTime(GONG_HZ / 2, when);
   const end = when + dur + 0.4;
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.linearRampToValueAtTime(0.022, when + 0.28);
-  g.gain.linearRampToValueAtTime(0.018, Math.min(end - 0.05, when + Math.max(0.4, dur * 0.7)));
+  g.gain.linearRampToValueAtTime(0.006, when + 0.28);
+  g.gain.linearRampToValueAtTime(0.005, Math.min(end - 0.05, when + Math.max(0.4, dur * 0.7)));
   g.gain.exponentialRampToValueAtTime(0.0001, end);
   osc.connect(g);
   g.connect(musicGain);
