@@ -132,6 +132,8 @@ let avgCost = 0;
 let heavenCount = 0;
 let heavenBoost = 0;
 let heavenLimitDown = false;
+/** 阿斗真正拍到地上的次数，提起来但还没落地的不算 */
+let slamCount = 0;
 
 /** 阿斗状态机：yoyo 甩动 / windup 提起 / fall 下坠 / splat 拍地 / dazed 眼冒金星 / reel 拉回 */
 let state = "yoyo";
@@ -582,6 +584,7 @@ function beginSplat() {
   aduRot = clamp(aduRot, -0.4, 0.4);
   shake = 20 + Math.min(16, Math.abs(slamPct));
   flash = 0.72;
+  slamCount += 1;
   sfxSplat();
   spawnImpact(aduX);
   floaters.push({
@@ -1394,7 +1397,7 @@ function drawHelp() {
   const boxW = Math.min(460, W - 28);
   const boxH = 64;
   const x = W >= 980 ? W - boxW - 14 : 14;
-  const y = W >= 980 ? 12 : 156;
+  const y = W >= 980 ? 12 : 178;
   ctx.fillStyle = "rgba(8, 12, 20, 0.78)";
   roundRect(x, y, boxW, boxH, 10);
   ctx.fill();
@@ -1410,7 +1413,7 @@ function drawHelp() {
   });
 }
 
-/** 持仓盈亏和天意计数。红为赚，绿为亏 */
+/** 持仓盈亏、天意和摔倒次数。红为赚，绿为亏 */
 function drawAccount(price) {
   const pnl = (price - avgCost) * shares;
   const pnlPct = avgCost > 0 ? (price - avgCost) / avgCost : 0;
@@ -1419,18 +1422,19 @@ function drawAccount(price) {
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
-  roundRect(14, 66, 292, 78, 10);
+  roundRect(14, 66, 300, 100, 10);
   ctx.fill();
   ctx.fillStyle = "#d7e0ea";
   ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
   const boostText = heavenBoost > 0 ? `    +${Math.round(heavenBoost * 100)}%` : "";
   ctx.fillText(`输送天意  ${heavenCount} 次${boostText}`, 26, 84);
+  ctx.fillText(`阿斗摔倒  ${slamCount} 次`, 26, 104);
   ctx.fillStyle = "rgba(215,224,234,0.78)";
   ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  ctx.fillText(`成本 ${avgCost.toFixed(2)}    持仓 ${shares}`, 26, 104);
+  ctx.fillText(`成本 ${avgCost.toFixed(2)}    持仓 ${shares}`, 26, 124);
   ctx.font = "bold 14px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
   ctx.fillStyle = profit ? "#ff4d4f" : "#14c38e";
-  ctx.fillText(`总盈亏  ${sign}${pnl.toFixed(2)}    ${sign}${(pnlPct * 100).toFixed(2)}%`, 26, 126);
+  ctx.fillText(`总盈亏  ${sign}${pnl.toFixed(2)}    ${sign}${(pnlPct * 100).toFixed(2)}%`, 26, 146);
 }
 
 /** 输送天意。键盘和底部按钮都走这里，按住不连发由调用方保证 */
@@ -1507,6 +1511,9 @@ let phrase = [];
 let rhythmIx = 0;
 let degree = 0;
 let scheduledUntil = 0;
+/** 笛、箫、筝轮流当主奏，避免从头到尾同一种跳音 */
+const VOICES = ["flute", "xiao", "zheng"];
+let voiceIx = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1544,6 +1551,7 @@ function ensureMusic() {
     filter.connect(rain);
     rain.connect(musicGain);
     src.start();
+    startDrone();
     scheduledUntil = 0;
     phrase = [];
   }
@@ -1558,18 +1566,37 @@ function freqOf(deg) {
   return GONG_HZ * Math.pow(2, oct + PENTA[i] / 12);
 }
 
+/** 低音宫和徵一直垫着，句子之间也不会空出一截 */
+function startDrone() {
+  const bed = audioCtx.createGain();
+  bed.gain.value = 0.02;
+  bed.connect(musicGain);
+  [GONG_HZ / 2, (GONG_HZ / 2) * 1.004, freqOf(3) / 2].forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.value = i === 2 ? 0.35 : 1;
+    osc.connect(g);
+    g.connect(bed);
+    osc.start();
+  });
+}
+
 /** 下一句：节奏型半循环，音高在五声里小步走，句尾回到宫 */
 function pushPhrase() {
   if (Math.random() < 0.72) rhythmIx = (rhythmIx + 1) % RHYTHM.length;
   else rhythmIx = Math.floor(Math.random() * RHYTHM.length);
   const cell = RHYTHM[rhythmIx];
   const reps = Math.random() < 0.62 ? 2 : 1;
+  const voice = VOICES[voiceIx % VOICES.length];
+  voiceIx += 1;
   degree = Math.random() < 0.7 ? 0 : 3;
   const built = [];
   for (let r = 0; r < reps; r++) {
     for (const beats of cell) {
       if (beats < 0) {
-        built.push({ rest: true, beats: -beats });
+        built.push({ rest: true, beats: -beats, voice });
         continue;
       }
       const roll = Math.random();
@@ -1582,7 +1609,7 @@ function pushPhrase() {
       degree += step;
       if (degree > 5) degree -= 5;
       if (degree < -2) degree += 5;
-      built.push({ rest: false, beats, degree });
+      built.push({ rest: false, beats, degree, voice });
     }
   }
   for (let i = built.length - 1; i >= 0; i--) {
@@ -1591,24 +1618,59 @@ function pushPhrase() {
       break;
     }
   }
+  const totalBeats = built.reduce((sum, n) => sum + n.beats, 0);
+  if (built.length) built[0].padBeats = totalBeats;
   phrase.push(...built);
-  phrase.push({ rest: true, beats: 0.5 + Math.random() * 0.5 });
+  phrase.push({ rest: true, beats: 0.7, voice });
 }
 
-/** 按这颗音的时值收束，短音不拖成一片 */
-function playTuneNoteAt(when, freq, dur) {
+/**
+ * 一句底下的长音。笛偏亮，箫带一点泛音，筝是两根略微分开的弦。
+ * 时值拖过下一颗音，避免一顿一顿地断开。
+ */
+function playVoice(when, freq, dur, voice) {
+  const attack = voice === "zheng" ? 0.05 : Math.min(0.26, Math.max(0.1, dur * 0.42));
+  const hold = dur * (voice === "zheng" ? 1.65 : 1.45);
+  const end = when + Math.max(hold, attack + 0.16);
+  const releaseAt = when + Math.max(attack + 0.06, hold * 0.7);
+  const layers = voice === "xiao"
+    ? [{ type: "sine", mul: 1, gain: 0.9 }, { type: "sine", mul: 2, gain: 0.08 }]
+    : voice === "zheng"
+      ? [{ type: "triangle", mul: 1, gain: 0.5 }, { type: "triangle", mul: 1.006, gain: 0.32 }]
+      : [{ type: "sine", mul: 1, gain: 0.75 }, { type: "triangle", mul: 2, gain: 0.08 }];
+  const peak = 0.036;
+  layers.forEach((layer) => {
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = layer.type;
+    osc.frequency.setValueAtTime(freq * layer.mul, when);
+    const level = peak * layer.gain;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.linearRampToValueAtTime(level, when + attack);
+    g.gain.linearRampToValueAtTime(Math.max(0.0002, level * 0.8), releaseAt);
+    g.gain.exponentialRampToValueAtTime(0.0001, end);
+    osc.connect(g);
+    g.connect(musicGain);
+    osc.start(when);
+    osc.stop(end + 0.02);
+  });
+}
+
+/** 每一句开始时铺一根低音宫，把上面的旋律粘住 */
+function playPad(when, dur) {
   const osc = audioCtx.createOscillator();
   const g = audioCtx.createGain();
-  osc.type = "triangle";
-  osc.frequency.setValueAtTime(freq, when);
-  const hold = Math.max(0.06, dur * 0.86);
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(GONG_HZ / 2, when);
+  const end = when + dur + 0.4;
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.exponentialRampToValueAtTime(dur >= BEAT * 1.4 ? 0.07 : 0.085, when + Math.min(0.03, hold * 0.35));
-  g.gain.exponentialRampToValueAtTime(0.0001, when + hold);
+  g.gain.linearRampToValueAtTime(0.022, when + 0.28);
+  g.gain.linearRampToValueAtTime(0.018, Math.min(end - 0.05, when + Math.max(0.4, dur * 0.7)));
+  g.gain.exponentialRampToValueAtTime(0.0001, end);
   osc.connect(g);
   g.connect(musicGain);
   osc.start(when);
-  osc.stop(when + hold + 0.02);
+  osc.stop(end + 0.02);
 }
 
 /** 往前排两秒左右的旋律。声音关掉时不排，避免积一长串 */
@@ -1619,8 +1681,9 @@ function updateMusic() {
   while (scheduledUntil < now + 2.2) {
     if (!phrase.length) pushPhrase();
     const n = phrase.shift();
-    const dur = Math.max(0.05, n.beats * BEAT);
-    if (!n.rest) playTuneNoteAt(scheduledUntil, freqOf(n.degree), dur);
+    const dur = Math.max(0.08, n.beats * BEAT);
+    if (n.padBeats) playPad(scheduledUntil, n.padBeats * BEAT);
+    if (!n.rest) playVoice(scheduledUntil, freqOf(n.degree), dur, n.voice || "flute");
     scheduledUntil += dur;
   }
 }
