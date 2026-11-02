@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>阿斗溜溜球</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070b12;
+    overflow: hidden;
+    user-select: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+"use strict";
+
+/** 画布与屏幕尺寸（CSS 像素） */
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let W = 1;
+let H = 1;
+
+/** 一根 K 线的时长、柱宽、溜溜球周期。MODEL_H 是造型坐标里的身高，DRAW 放大后才是屏幕上的脚到底到冠顶 */
+const BAR_MS = 980;
+const BODY_W = 11;
+const GAP = 6;
+const STEP = BODY_W + GAP;
+const MODEL_H = 104;
+const DRAW = 1.42;
+const FOOT = MODEL_H * DRAW;
+const PERIOD = 1.22;
+
+/**
+ * 行情只在自由波动里走。
+ * 从这段波动的低点涨够了，才来一轮天意撤离；
+ * 从高点跌够了，才从底部扔出大喇叭。
+ * 这两件事之间至少隔 QUIET_MIN 根自由波动。
+ */
+let candles = [];
+let forming = null;
+let formStart = 0;
+let lastClose = 16;
+let regime = "free";
+let downStreak = 0;
+let crashCool = 0;
+let script = [];
+let finishScript = false;
+const QUIET_MIN = 40;
+const EXIT_RISE = 0.12;
+const HORN_DROP = 0.12;
+let quietLeft = QUIET_MIN;
+let swingHigh = 0;
+let swingLow = 0;
+/** 正在飞的大喇叭，和 K 线无关 */
+let flyingHorns = [];
+
+/** 底仓和每次加仓的股数。加仓按现价成交，用来把成本往现价摊 */
+const BASE_SHARES = 1000;
+const ADD_SHARES = 200;
+/** 每次输送天意，下根上涨概率增加的幅度，以及封顶 */
+const HEAVEN_STEP = 0.07;
+const HEAVEN_CAP = 0.62;
+/** 每次输送天意时，下一根直接跌停的概率 */
+const LIMIT_DOWN_P = 0.035;
+const LIMIT_DOWN_RET = -0.1;
+
+/** 持仓、成本、天意。天意只作用在下一根还没生成的 K 线上 */
+let shares = 0;
+let avgCost = 0;
+let heavenCount = 0;
+let heavenBoost = 0;
+let heavenLimitDown = false;
+
+/** 阿斗状态机：yoyo 甩动 / windup 提起 / fall 下坠 / splat 拍地 / dazed 眼冒金星 / reel 拉回 */
+let state = "yoyo";
+let stateT = 0;
+let aduX = 0;
+let aduY = 0;
+let aduRot = 0;
+let aduSx = 1;
+let aduSy = 1;
+let vx = 0;
+let vy = 0;
+let rotV = 0;
+let pendingSlam = false;
+let slamPct = 0;
+let shake = 0;
+let flash = 0;
+let fromX = 0;
+let fromY = 0;
+let fromRot = 0;
+
+/** 尘土、裂纹、飘字 */
+let particles = [];
+let cracks = [];
+let floaters = [];
+
+/** 把价格和进度限制在可用区间里 */
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+/** 地面接触线。阿斗的脚以这条线为落点 */
+function groundY() {
+  return H - 28;
+}
+
+/** 行情绘图区 */
+function chartBox() {
+  return { left: 12, right: W - 68, top: 58, bottom: groundY() - 6 };
+}
+
+/** 普通摆动时脚离地至少 16px，跌破 5% 才允许落到地板上 */
+function maxAmp() {
+  const handLow = 70;
+  return Math.max(90, groundY() - 16 - FOOT - handLow - 14);
+}
+
+/** 手左右甩开的距离 */
+function swingReach() {
+  return Math.min(190, W * 0.18);
+}
+
+/** 0 到 1 的平滑插值 */
+function easeInOut(u) {
+  const t = clamp(u, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/** 圆角矩形路径 */
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+/** 按当前时间取出溜溜球相位 0..1 */
+function phase(now) {
+  const t = now / 1000;
+  const p = (t % PERIOD) / PERIOD;
+  return { t, p };
+}
+
+/** 特殊行情结束后，重新开始一段足够长的自由波动，高低点也从这里重计 */
+function beginQuiet(price) {
+  regime = "free";
+  quietLeft = QUIET_MIN + Math.floor(Math.random() * 18);
+  swingHigh = price;
+  swingLow = price;
+  downStreak = 0;
+}
+
+/** 底部吹喇叭时的价格只是一小段普通上涨，喇叭本身另外画 */
+function pushHornRise() {
+  const bars = 7;
+  let sincePull = 0;
+  let launched = false;
+  for (let i = 0; i < bars; i++) {
+    if (sincePull >= 2 && Math.random() < 0.65) {
+      script.push({ ret: -(0.004 + Math.random() * 0.004), kind: "free", launch: false });
+      sincePull = 0;
+    } else {
+      script.push({ ret: 0.009 + Math.random() * 0.012, kind: "free", launch: !launched });
+      launched = true;
+      sincePull += 1;
+    }
+  }
+  regime = "script";
+}
+
+/** 涨高之后天意撤离：连续几根带超长上影的绿柱 */
+function pushHeavenExit() {
+  const bars = 6 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < bars; i++) {
+    script.push({ ret: -(0.016 + Math.random() * 0.02), kind: "exit", launch: false });
+  }
+  regime = "script";
+}
+
+/** 自由波动。最多连跌两根，偶尔一根跌破 5% 让阿斗摔下去 */
+function freeStep() {
+  crashCool = Math.max(0, crashCool - 1);
+  let ret = (Math.random() + Math.random() - 1) * 0.03;
+  if (downStreak >= 2 && ret < 0) ret = 0.006 + Math.random() * 0.014;
+  else if (crashCool === 0 && downStreak === 0 && Math.random() < 0.08) {
+    ret = -(0.058 + Math.random() * 0.03);
+    crashCool = 10;
+  } else {
+    ret = clamp(ret, -0.028, 0.028);
+  }
+  return { ret, kind: ret <= -0.05 ? "crash" : "free", launch: false };
+}
+
+/** 下一根 K 线。安静期没走完时，不允许吹喇叭，也不允许天意撤离 */
+function takeStep(price) {
+  if (script.length) {
+    const step = script.shift();
+    if (!script.length) finishScript = true;
+    return step;
+  }
+  if (quietLeft > 0) {
+    quietLeft -= 1;
+    return freeStep();
+  }
+  const fromLow = swingLow > 0 ? (price - swingLow) / swingLow : 0;
+  const fromHigh = swingHigh > 0 ? (swingHigh - price) / swingHigh : 0;
+  if (fromHigh >= HORN_DROP && fromHigh >= fromLow) {
+    pushHornRise();
+    return takeStep(price);
+  }
+  if (fromLow >= EXIT_RISE) {
+    pushHeavenExit();
+    return takeStep(price);
+  }
+  return freeStep();
+}
+
+/**
+ * 用掉已经攒下的天意，只影响这一根即将生成的 K 线。
+ * 跌停优先于上涨加成；上涨加成只在原本会收阴时，按概率把它翻成小阳。
+ */
+function consumeHeaven(step) {
+  const limit = heavenLimitDown;
+  const boost = heavenBoost;
+  heavenLimitDown = false;
+  heavenBoost = 0;
+  if (limit) {
+    return { ret: LIMIT_DOWN_RET, kind: "limit", hornId: 0, flare: 0 };
+  }
+  if (boost > 0 && step.ret < 0 && Math.random() < boost) {
+    return {
+      ret: 0.006 + Math.random() * 0.016,
+      kind: step.kind === "horn" ? "horn" : step.kind,
+      hornId: step.hornId || 0,
+      flare: step.flare || 0
+    };
+  }
+  return step;
+}
+
+/** 折线采样：times 单调递增，落在 0..1 */
+function evalPath(pts, times, t) {
+  const u = clamp(t, 0, 1);
+  for (let i = 1; i < times.length; i++) {
+    if (u <= times[i]) {
+      const span = times[i] - times[i - 1] || 1;
+      const k = (u - times[i - 1]) / span;
+      return pts[i - 1] + (pts[i] - pts[i - 1]) * k;
+    }
+  }
+  return pts[pts.length - 1];
+}
+
+/**
+ * 造一根 K 线。live 为真时，跌破 5% 才会把阿斗摔下去。
+ * 喇叭口朝上：上影随 flare 拉长。
+ */
+function makeCandle(prev, live) {
+  const raw = takeStep(prev);
+  if (live && raw.launch) launchHorns();
+  const step = live ? consumeHeaven(raw) : raw;
+  const ret = step.ret;
+  const close = Math.max(1.5, prev * (1 + ret));
+  const open = prev * (1 + (Math.random() - 0.5) * 0.0025);
+  let pts;
+  let times;
+  if (step.kind === "exit") {
+    // 先冲高，再收在更低的位置，留下很长的上影，颜色按收盘相对前收算是绿
+    const high = Math.max(open, prev) * (1 + 0.07 + Math.random() * 0.06);
+    const low = Math.min(open, close) * (1 - 0.003);
+    pts = [open, high, low, close];
+    times = [0, 0.22, 0.78, 1];
+  } else if (ret <= -0.05) {
+    const top = Math.max(open, prev) * (1 + Math.random() * 0.005);
+    const low = close * (1 - Math.random() * 0.008);
+    pts = [open, top, low, close];
+    times = [0, 0.16, 0.78, 1];
+  } else if (ret >= 0) {
+    const low = Math.min(open, close) * (1 - Math.random() * 0.006);
+    const high = Math.max(open, close) * (1 + Math.random() * 0.008);
+    pts = [open, low, high, close];
+    times = [0, 0.34, 0.68, 1];
+  } else {
+    const high = Math.max(open, close) * (1 + Math.random() * 0.006);
+    const low = Math.min(open, close) * (1 - Math.random() * 0.008);
+    pts = [open, high, low, close];
+    times = [0, 0.34, 0.7, 1];
+  }
+  if (close < prev) downStreak += 1;
+  else downStreak = 0;
+  if (finishScript) {
+    finishScript = false;
+    beginQuiet(close);
+  } else if (regime === "free") {
+    if (close > swingHigh) swingHigh = close;
+    if (close < swingLow) swingLow = close;
+  }
+  const hi = Math.max(...pts);
+  const lo = Math.min(...pts);
+  return {
+    prev,
+    o: open,
+    h: hi,
+    l: lo,
+    c: close,
+    pts,
+    times,
+    crash: !!live && ret <= -0.05,
+    kind: step.kind,
+    hornId: step.hornId || 0,
+    slammed: false,
+    seenH: open,
+    seenL: open,
+    live: open
+  };
+}
+
+/** 当前这根 K 线走到哪了，1 表示收盘 */
+function formProgress(now) {
+  if (!forming) return 0;
+  return clamp((now - formStart) / BAR_MS, 0, 1);
+}
+
+/** 相对前收的实时涨跌幅。跌破 -0.05 就会触发摔跤 */
+function liveReturn(now) {
+  if (!forming) return 0;
+  const price = evalPath(forming.pts, forming.times, formProgress(now));
+  return (price - forming.prev) / forming.prev;
+}
+
+/** 预填一段历史，打开页面就能看见一整面 K 线。走势和实时用的是同一套阶段机 */
+function bootstrapMarket(now) {
+  let price = 16 + Math.random() * 8;
+  candles = [];
+  regime = "free";
+  quietLeft = 6;
+  downStreak = 0;
+  swingHigh = price;
+  swingLow = price;
+  crashCool = 4;
+  script = [];
+  finishScript = false;
+  flyingHorns = [];
+  for (let i = 0; i < 120; i++) {
+    const cd = makeCandle(price, false);
+    candles.push(cd);
+    price = cd.c;
+  }
+  lastClose = price;
+  shares = BASE_SHARES;
+  avgCost = price;
+  forming = makeCandle(price, true);
+  formStart = now;
+}
+
+/** 收盘并接上下一根。历史数组只保留屏幕装得下的量 */
+function rollCandle(now) {
+  if (!forming) return;
+  const done = forming;
+  done.live = done.c;
+  done.seenH = done.h;
+  done.seenL = done.l;
+  candles.push(done);
+  if (candles.length > 240) candles.splice(0, candles.length - 240);
+  lastClose = done.c;
+  forming = makeCandle(done.c, true);
+  formStart = now;
+}
+
+/** 手的位置。每轮开始时手腕向下抖一下，像把溜溜球甩出去 */
+function handTarget(now) {
+  const { t, p } = phase(now);
+  const swing = Math.sin((t / PERIOD) * Math.PI * 2);
+  const reach = swingReach();
+  let flick = 0;
+  if (p < 0.16) flick = Math.sin((p / 0.16) * Math.PI);
+  return {
+    x: W * 0.5 + swing * reach,
+    y: 48 + flick * 18,
+    rot: -flick * 0.9
+  };
+}
+
+/**
+ * 甩动目标。脚的纵坐标由绳子长度决定：
+ * 涨了绳子收短，跌了绳子放长，但常态下脚停在地面上方。
+ */
+function yoyoTarget(now) {
+  const { t, p } = phase(now);
+  let drop;
+  let squash;
+  // 先加速下甩，在底部停一停，再猛地收回。涨则收短，跌则放长
+  if (p < 0.32) {
+    const k = p / 0.32;
+    drop = k * k;
+    squash = k;
+  } else if (p < 0.6) {
+    drop = 1;
+    squash = 1;
+  } else {
+    const k = (p - 0.6) / 0.4;
+    drop = (1 - k) * (1 - k);
+    squash = 1 - k;
+  }
+  const ret = liveReturn(now);
+  const room = maxAmp();
+  const portion = clamp(0.86 - ret * 6.5, 0.46, 1);
+  const amp = room * portion;
+  const hand = handTarget(now);
+  const reach = swingReach();
+  const lag = Math.sin((t / PERIOD) * Math.PI * 2 - 0.55);
+  const farX = W * 0.5 + lag * reach;
+  const x = hand.x + (farX - hand.x) * drop;
+  const hatY = hand.y + 14 + amp * drop;
+  const y = hatY + FOOT;
+  const lean = clamp((x - hand.x) / 220, -0.45, 0.45);
+  const sy = drop > 0.92 ? 0.9 : 1 + squash * 0.08;
+  const sx = drop > 0.92 ? 1.08 : 1 - squash * 0.05;
+  let expr = "blank";
+  if (drop > 0.9) expr = "gforce";
+  return { x, y, rot: lean, sx, sy, drop, expr, ret };
+}
+
+/** 冠顶世界坐标，用来接绳子 */
+function hatWorld() {
+  if (state === "fall") {
+    return {
+      x: aduX + Math.sin(aduRot) * 16,
+      y: aduY - FOOT * 0.78,
+      slack: true
+    };
+  }
+  if (state === "splat" || state === "dazed") {
+    return { x: aduX, y: aduY - FOOT * aduSy, slack: true };
+  }
+  return {
+    x: aduX + Math.sin(aduRot) * FOOT * aduSy,
+    y: aduY - Math.cos(aduRot) * FOOT * aduSy,
+    slack: false
+  };
+}
+
+/** 开始把阿斗提回手边，下一帧进入下坠 */
+function beginWindup(now) {
+  state = "windup";
+  stateT = 0;
+  fromX = aduX;
+  fromY = aduY;
+  fromRot = aduRot;
+  flash = Math.max(flash, 0.08);
+}
+
+/** 绳子松开，给一个向下的初速度 */
+function beginFall() {
+  state = "fall";
+  stateT = 0;
+  vy = 220;
+  vx = (aduX - W * 0.5) * 0.35;
+  rotV = (aduX > W * 0.5 ? 1 : -1) * 1.5;
+  aduSx = 0.86;
+  aduSy = 1.22;
+}
+
+/** 触地：压扁、震屏、扬尘 */
+function beginSplat() {
+  state = "splat";
+  stateT = 0;
+  aduY = groundY();
+  vy = 0;
+  vx *= 0.2;
+  aduRot = clamp(aduRot, -0.4, 0.4);
+  shake = 20 + Math.min(16, Math.abs(slamPct));
+  flash = 0.72;
+  spawnImpact(aduX);
+  floaters.push({
+    text: "啪",
+    x: aduX + 36,
+    y: groundY() - 70,
+    vy: -70,
+    life: 0.7,
+    age: 0,
+    size: 54,
+    color: "#ffe7a3"
+  });
+  floaters.push({
+    text: `跌 ${Math.abs(slamPct).toFixed(1)}%`,
+    x: W * 0.5,
+    y: 108,
+    vy: -18,
+    life: 1.65,
+    age: 0,
+    size: 42,
+    color: "#3dde9a"
+  });
+}
+
+/** 在地上躺一会儿 */
+function beginDazed() {
+  state = "dazed";
+  stateT = 0;
+  aduY = groundY();
+}
+
+/** 绳子重新绷紧，拉回溜溜球轨迹 */
+function beginReel() {
+  state = "reel";
+  stateT = 0;
+  fromX = aduX;
+  fromY = aduY;
+  fromRot = aduRot;
+}
+
+/** 跌破 5% 时调用。如果还躺着，就等站起来再摔下一次 */
+function triggerSlam(ret) {
+  slamPct = ret * 100;
+  if (state === "yoyo") beginWindup();
+  else pendingSlam = true;
+}
+
+/** 拍地时的尘土和地面裂纹 */
+function spawnImpact(x) {
+  for (let i = 0; i < 18; i++) {
+    const a = Math.PI + Math.random() * Math.PI;
+    const sp = 90 + Math.random() * 260;
+    particles.push({
+      x,
+      y: groundY() - 2,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 30,
+      life: 0.45 + Math.random() * 0.45,
+      age: 0,
+      r: 2 + Math.random() * 3.2,
+      color: Math.random() < 0.5 ? "#d9c7a4" : "#8f8576"
+    });
+  }
+  cracks.push({ x, life: 2.6, age: 0, seed: Math.random() * 10 });
+}
+
+/** 物理与行情推进 */
+function update(dt, now) {
+  if (forming) {
+    const prog = formProgress(now);
+    const price = evalPath(forming.pts, forming.times, prog);
+    forming.live = price;
+    forming.seenH = Math.max(forming.seenH, price);
+    forming.seenL = Math.min(forming.seenL, price);
+    // 刚跌破 5% 就摔。牌子上写这根 K 线的最终跌幅，而不是刚越过门槛的那一瞬间
+    if (!forming.slammed && liveReturn(now) <= -0.05) {
+      forming.slammed = true;
+      triggerSlam((forming.c - forming.prev) / forming.prev);
+    }
+    if (prog >= 1) rollCandle(now);
+  }
+
+  const pose = yoyoTarget(now);
+  const hand = handTarget(now);
+
+  if (state === "yoyo") {
+    if (pendingSlam) {
+      pendingSlam = false;
+      beginWindup(now);
+    } else {
+      aduX = pose.x;
+      aduY = pose.y;
+      aduRot = pose.rot;
+      aduSx = pose.sx;
+      aduSy = pose.sy;
+    }
+  } else if (state === "windup") {
+    stateT += dt;
+    const u = clamp(stateT / 0.16, 0, 1);
+    const e = 1 - Math.pow(1 - u, 3);
+    const targetY = hand.y + 18 + FOOT;
+    aduX = fromX + (hand.x - fromX) * e;
+    aduY = fromY + (targetY - fromY) * e;
+    aduRot = fromRot * (1 - e);
+    aduSx = 1 - 0.16 * e;
+    aduSy = 1 + 0.28 * e;
+    if (u >= 1) beginFall();
+  } else if (state === "fall") {
+    stateT += dt;
+    vy += 3600 * dt;
+    aduX += vx * dt;
+    aduY += vy * dt;
+    aduRot = clamp(aduRot + rotV * dt, -0.9, 0.9);
+    const sp = clamp(vy / 1600, 0, 1);
+    aduSx = 0.9 - 0.08 * sp;
+    aduSy = 1.15 + 0.18 * sp;
+    if (aduY >= groundY()) {
+      aduY = groundY();
+      beginSplat();
+    }
+  } else if (state === "splat") {
+    stateT += dt;
+    const u = clamp(stateT / 0.2, 0, 1);
+    const hop = Math.sin(u * Math.PI);
+    aduY = groundY() - hop * 22;
+    aduSx = 1.46 - 0.16 * u;
+    aduSy = 0.42 + 0.12 * u;
+    aduRot *= 0.9;
+    if (stateT >= 0.22) beginDazed();
+  } else if (state === "dazed") {
+    stateT += dt;
+    aduY = groundY();
+    aduSx = 1.34;
+    aduSy = 0.5;
+    aduRot = Math.sin(stateT * 22) * 0.05 * Math.max(0, 1 - stateT);
+    if (stateT >= 1.12) beginReel();
+  } else if (state === "reel") {
+    stateT += dt;
+    const u = easeInOut(stateT / 0.48);
+    aduX = fromX + (pose.x - fromX) * u;
+    aduY = fromY + (pose.y - fromY) * u;
+    aduRot = fromRot + (pose.rot - fromRot) * u;
+    aduSx = 1.34 + (pose.sx - 1.34) * u;
+    aduSy = 0.5 + (pose.sy - 0.5) * u;
+    if (u > 0.72) aduSy += Math.sin(((u - 0.72) / 0.28) * Math.PI) * 0.12;
+    if (stateT >= 0.48) {
+      state = "yoyo";
+      stateT = 0;
+    }
+  }
+
+  shake = Math.max(0, shake - dt * 32);
+  flash = Math.max(0, flash - dt * 1.8);
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.age += dt;
+    p.vy += 900 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.y > groundY()) {
+      p.y = groundY();
+      p.vy *= -0.25;
+      p.vx *= 0.8;
+    }
+    if (p.age >= p.life) particles.splice(i, 1);
+  }
+  for (let i = cracks.length - 1; i >= 0; i--) {
+    cracks[i].age += dt;
+    if (cracks[i].age >= cracks[i].life) cracks.splice(i, 1);
+  }
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.age += dt;
+    f.y += f.vy * dt;
+    f.vy *= 0.98;
+    if (f.age >= f.life) floaters.splice(i, 1);
+  }
+  updateFlyingHorns(dt);
+}
+
+/** 从地板上往上扔出几只大喇叭 */
+function launchHorns() {
+  const count = 5 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i++) {
+    flyingHorns.push({
+      x: W * (0.1 + Math.random() * 0.8),
+      y: groundY() - 4,
+      vx: (Math.random() - 0.5) * 240,
+      vy: -(860 + Math.random() * 420),
+      rot: -Math.PI / 2 + (Math.random() - 0.5) * 0.5,
+      vr: (Math.random() - 0.5) * 3.4,
+      life: 2.15 + Math.random() * 0.55,
+      age: 0,
+      scale: 0.9 + Math.random() * 0.85
+    });
+  }
+}
+
+/** 喇叭抛出去之后会减速下落 */
+function updateFlyingHorns(dt) {
+  for (let i = flyingHorns.length - 1; i >= 0; i--) {
+    const h = flyingHorns[i];
+    h.age += dt;
+    h.vy += 540 * dt;
+    h.x += h.vx * dt;
+    h.y += h.vy * dt;
+    h.rot += h.vr * dt;
+    // 扔上去再落回地板就收掉，不让喇叭停在地上
+    if (h.age >= h.life || (h.age > 0.35 && h.y >= groundY() - 8)) flyingHorns.splice(i, 1);
+  }
+}
+
+/** 一只矢量喇叭，口朝右，调用前自行旋转到朝上 */
+function drawOneHorn() {
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#3a2412";
+  ctx.fillStyle = "#f0c14b";
+  ctx.beginPath();
+  ctx.moveTo(2, -8);
+  ctx.lineTo(36, -28);
+  ctx.quadraticCurveTo(50, 0, 36, 28);
+  ctx.lineTo(2, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#e23d3d";
+  ctx.beginPath();
+  ctx.ellipse(38, 0, 8, 26, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#c9862a";
+  ctx.beginPath();
+  ctx.rect(-18, -9, 22, 18);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#fff6d8";
+  ctx.beginPath();
+  ctx.arc(44, -10, 3.2, 0, Math.PI * 2);
+  ctx.arc(44, 10, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** 飞在半空的喇叭。快落地时淡出 */
+function drawFlyingHorns() {
+  for (const h of flyingHorns) {
+    const fade = 1 - Math.max(0, (h.age - h.life * 0.62) / (h.life * 0.38));
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, fade);
+    ctx.translate(h.x, h.y);
+    ctx.rotate(h.rot);
+    ctx.scale(h.scale, h.scale);
+    drawOneHorn();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** 纵轴缓动，避免新 K 线一进来整图猛跳 */
+let axisMin = null;
+let axisMax = null;
+
+/** 只按屏幕里看得到的 K 线定高低点。正在走的那根用已经出现的影线，不提前暴露收盘 */
+function viewRange(now) {
+  const box = chartBox();
+  let minP = Infinity;
+  let maxP = -Infinity;
+  const take = (high, low) => {
+    minP = Math.min(minP, high, low);
+    maxP = Math.max(maxP, high, low);
+  };
+  for (let i = 0; i < candles.length; i++) {
+    const x = candleX(i, now, box);
+    if (x < box.left - STEP || x > box.right + STEP) continue;
+    take(candles[i].h, candles[i].l);
+  }
+  if (forming) take(Math.max(forming.seenH, forming.live), Math.min(forming.seenL, forming.live));
+  if (!isFinite(minP) || !isFinite(maxP)) {
+    minP = 10;
+    maxP = 20;
+  }
+  const pad = Math.max(0.25, (maxP - minP) * 0.14);
+  const targetMin = minP - pad;
+  const targetMax = maxP + pad;
+  if (axisMin == null) {
+    axisMin = targetMin;
+    axisMax = targetMax;
+  } else {
+    axisMin += (targetMin - axisMin) * 0.08;
+    axisMax += (targetMax - axisMax) * 0.08;
+  }
+  return { minP: axisMin, maxP: axisMax, box };
+}
+
+/** 价格转纵坐标 */
+function priceToY(price, range) {
+  const span = range.maxP - range.minP || 1;
+  return range.box.top + (1 - (price - range.minP) / span) * (range.box.bottom - range.box.top);
+}
+
+/** 第 i 根已收盘 K 线的横坐标。最新一根贴在右侧，并随着新 K 线平滑左移 */
+function candleX(i, now, box) {
+  const prog = formProgress(now);
+  const head = candles.length + prog;
+  return box.right - 8 - (head - i) * STEP;
+}
+
+/** 背景、网格、K 线、均线 */
+function drawMarket(now) {
+  const range = viewRange(now);
+  const { box } = range;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#10192a");
+  sky.addColorStop(1, "#070b12");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = "rgba(232, 238, 247, 0.05)";
+  ctx.lineWidth = 1;
+  ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(215, 224, 234, 0.45)";
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const price = range.minP + ((range.maxP - range.minP) * i) / ticks;
+    const y = priceToY(price, range);
+    ctx.beginPath();
+    ctx.moveTo(box.left, y);
+    ctx.lineTo(box.right, y);
+    ctx.stroke();
+    ctx.fillText(price.toFixed(2), box.right + 8, y + 4);
+  }
+
+  // 5 周期均线，让背景不只是一根根柱子
+  ctx.beginPath();
+  let started = false;
+  ctx.strokeStyle = "rgba(255, 196, 92, 0.55)";
+  ctx.lineWidth = 1.4;
+  const start = Math.max(4, candles.length - Math.ceil((box.right - box.left) / STEP) - 2);
+  for (let i = start; i < candles.length; i++) {
+    let sum = 0;
+    for (let k = i - 4; k <= i; k++) sum += candles[k].c;
+    const x = candleX(i, now, box) + BODY_W / 2;
+    const y = priceToY(sum / 5, range);
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  function drawBar(cd, x, live) {
+    const open = cd.o;
+    const close = live ? cd.live : cd.c;
+    const high = live ? Math.max(cd.seenH, open, close) : cd.h;
+    const low = live ? Math.min(cd.seenL, open, close) : cd.l;
+    const up = close >= cd.prev;
+    const color = up ? "#ff4d4f" : "#14c38e";
+    const yH = priceToY(high, range);
+    const yL = priceToY(low, range);
+    const yO = priceToY(open, range);
+    const yC = priceToY(close, range);
+    const top = Math.min(yO, yC);
+    const bh = Math.max(1, Math.abs(yC - yO));
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x + BODY_W / 2, yH);
+    ctx.lineTo(x + BODY_W / 2, yL);
+    ctx.stroke();
+    ctx.fillRect(x, top, BODY_W, bh);
+  }
+
+  for (let i = 0; i < candles.length; i++) {
+    const x = candleX(i, now, box);
+    if (x < box.left - STEP || x > box.right + STEP) continue;
+    drawBar(candles[i], x, false);
+  }
+  if (forming) {
+    const x = candleX(candles.length, now, box);
+    drawBar(forming, x, true);
+    const y = priceToY(forming.live, range);
+    const up = forming.live >= forming.prev;
+    ctx.strokeStyle = up ? "rgba(255, 77, 79, 0.85)" : "rgba(20, 195, 142, 0.85)";
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(x + BODY_W + 2, y);
+    ctx.lineTo(box.right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = up ? "#ff4d4f" : "#14c38e";
+    roundRect(box.right + 4, y - 9, 56, 18, 3);
+    ctx.fill();
+    ctx.fillStyle = "#1a0c0c";
+    ctx.font = "bold 11px PingFang SC, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(forming.live.toFixed(2), box.right + 32, y + 4);
+  }
+}
+
+/** 木地板和拍出来的裂纹 */
+function drawFloor() {
+  const y = groundY();
+  const g = ctx.createLinearGradient(0, y - 4, 0, H);
+  g.addColorStop(0, "#3a2a1c");
+  g.addColorStop(1, "#1a120c");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, y, W, H - y);
+  ctx.strokeStyle = "rgba(255, 220, 170, 0.35)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, y + 1);
+  ctx.lineTo(W, y + 1);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,0.25)";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 46) {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+
+  for (const c of cracks) {
+    const a = 1 - c.age / c.life;
+    ctx.strokeStyle = `rgba(40, 24, 12, ${0.75 * a})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(c.x, y);
+    const dirs = [-1.1, -0.45, 0.2, 0.85];
+    for (const d of dirs) {
+      ctx.moveTo(c.x, y);
+      ctx.lineTo(c.x + Math.cos(d + c.seed) * 26, y + 10 + (c.seed % 3));
+    }
+    ctx.stroke();
+  }
+}
+
+/** 画一只从画面顶端伸下来的手 */
+function drawHand(now) {
+  const hand = handTarget(now);
+  ctx.save();
+  ctx.translate(hand.x, hand.y);
+  ctx.rotate(hand.rot);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#2a1a10";
+  // 袖子从画面外垂下来
+  ctx.fillStyle = "#6b4428";
+  ctx.beginPath();
+  ctx.moveTo(-15, -140);
+  ctx.lineTo(15, -140);
+  ctx.lineTo(13, -4);
+  ctx.lineTo(-13, -4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#e6c35c";
+  roundRect(-16, -12, 32, 9, 2);
+  ctx.fill();
+  ctx.stroke();
+  // 握着绳子的拳头。指缝用直线，避免弯弧被看成五官
+  ctx.fillStyle = "#ffd2b0";
+  roundRect(-16, -2, 32, 18, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(15, 7, 6, 4.5, 0.6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-7, 1);
+  ctx.lineTo(-7, 13);
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, 14);
+  ctx.moveTo(7, 1);
+  ctx.lineTo(7, 13);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 绳子。松的时候垂成一段软线，绷紧时拉直 */
+function drawString(now) {
+  const hand = handTarget(now);
+  const hat = hatWorld();
+  const ret = forming ? (forming.live - forming.prev) / forming.prev : 0;
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = "round";
+  if (hat.slack) {
+    ctx.strokeStyle = "rgba(220, 226, 214, 0.45)";
+    ctx.beginPath();
+    ctx.moveTo(hand.x, hand.y + 6);
+    const midY = hand.y + 70 + Math.sin(stateT * 18) * 8;
+    ctx.quadraticCurveTo(hand.x + 20, midY, hand.x + Math.sin(stateT * 9) * 16, midY + 24);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(hat.x, hat.y - 4, 5, 0, Math.PI * 1.4);
+    ctx.stroke();
+    return;
+  }
+  ctx.strokeStyle = ret >= 0 ? "#ff6b6b" : ret < -0.03 ? "#7dffa8" : "#1ec98a";
+  ctx.beginPath();
+  ctx.moveTo(hand.x, hand.y + 8);
+  const mx = (hand.x + hat.x) / 2 + Math.sin(now / 90) * 2;
+  const my = (hand.y + hat.y) / 2;
+  ctx.quadraticCurveTo(mx, my, hat.x, hat.y);
+  ctx.stroke();
+}
+
+/** 按表情画五官 */
+function drawFace(expr, flap) {
+  ctx.fillStyle = "#ffd2b0";
+  ctx.beginPath();
+  ctx.arc(0, 40, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(255, 120, 120, 0.35)";
+  ctx.beginPath();
+  ctx.ellipse(-10, 46, 4, 2.4, 0, 0, Math.PI * 2);
+  ctx.ellipse(10, 46, 4, 2.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (expr === "fear") {
+    ctx.strokeStyle = "#2a1a10";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-12, 30);
+    ctx.lineTo(-6, 33);
+    ctx.moveTo(12, 30);
+    ctx.lineTo(6, 33);
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.ellipse(-7, 40, 5, 6, 0, 0, Math.PI * 2);
+    ctx.ellipse(7, 40, 5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#1a1a1a";
+    ctx.beginPath();
+    ctx.arc(-7, 41, 2.2, 0, Math.PI * 2);
+    ctx.arc(7, 41, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#7a3148";
+    ctx.beginPath();
+    ctx.ellipse(0, 50, 4, 5.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (expr === "dead" || expr === "dizzy") {
+    ctx.strokeStyle = "#2a1a10";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-12, 34);
+    ctx.lineTo(-4, 42);
+    ctx.moveTo(-4, 34);
+    ctx.lineTo(-12, 42);
+    ctx.moveTo(4, 34);
+    ctx.lineTo(12, 42);
+    ctx.moveTo(12, 34);
+    ctx.lineTo(4, 42);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 50, 4, 0.1, Math.PI - 0.1);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = "#2a1a10";
+    ctx.beginPath();
+    if (expr === "gforce") {
+      ctx.ellipse(-7, 39, 3.1, 4.2, 0, 0, Math.PI * 2);
+      ctx.ellipse(7, 39, 3.1, 4.2, 0, 0, Math.PI * 2);
+    } else {
+      ctx.ellipse(-7, 39, 2.3, 3.1, 0, 0, Math.PI * 2);
+      ctx.ellipse(7, 39, 2.3, 3.1, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    ctx.strokeStyle = "#2a1a10";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (expr === "gforce") ctx.arc(0, 49, 3.4, 0, Math.PI * 2);
+    else ctx.arc(0, 49, 5, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+  }
+
+  // 袖子随摆动张开
+  ctx.fillStyle = "#e2b43a";
+  ctx.strokeStyle = "#2a1a10";
+  ctx.lineWidth = 2;
+  roundRect(-40, 62 + flap, 16, 22, 6);
+  ctx.fill();
+  ctx.stroke();
+  roundRect(24, 62 - flap, 16, 22, 6);
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** 阿斗本体。脚底是缩放原点，压扁时脚还贴着地 */
+function drawAdu(now) {
+  let expr = "blank";
+  if (state === "yoyo") expr = yoyoTarget(now).expr;
+  else if (state === "windup" || state === "fall") expr = "fear";
+  else expr = state === "dazed" ? "dizzy" : "dead";
+
+  const flap = Math.sin(now / 80) * (state === "fall" ? 8 : 3);
+
+  ctx.save();
+  if (state === "fall") {
+    ctx.translate(aduX, aduY - FOOT * 0.48);
+    ctx.rotate(aduRot);
+    ctx.scale(aduSx * DRAW, aduSy * DRAW);
+    ctx.translate(0, -MODEL_H * 0.52);
+  } else {
+    ctx.translate(aduX, aduY);
+    ctx.rotate(aduRot);
+    ctx.scale(aduSx * DRAW, aduSy * DRAW);
+    ctx.translate(0, -MODEL_H);
+  }
+
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#2a1a10";
+  ctx.fillStyle = "#f0c14b";
+  roundRect(-26, 56, 52, 46, 12);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#b71c1c";
+  ctx.beginPath();
+  ctx.moveTo(0, 60);
+  ctx.lineTo(-7, 98);
+  ctx.lineTo(7, 98);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#6d4c41";
+  ctx.fillRect(-26, 78, 52, 6);
+
+  ctx.fillStyle = "#7a1f1f";
+  ctx.font = "bold 13px Songti SC, STSong, serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("阿斗", 0, 90);
+
+  ctx.fillStyle = "#24180f";
+  ctx.beginPath();
+  ctx.ellipse(-14, 104, 8, 4, 0, 0, Math.PI * 2);
+  ctx.ellipse(14, 104, 8, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  drawFace(expr, flap);
+
+  // 进贤冠
+  ctx.fillStyle = "#241c16";
+  ctx.beginPath();
+  ctx.moveTo(-22, 30);
+  ctx.lineTo(-15, 6);
+  ctx.lineTo(15, 6);
+  ctx.lineTo(22, 30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#e6c35c";
+  ctx.fillRect(-11, 2, 22, 7);
+  ctx.strokeRect(-11, 2, 22, 7);
+  ctx.fillStyle = "#d32f2f";
+  ctx.beginPath();
+  ctx.arc(0, 12, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  if (state === "dazed") {
+    ctx.save();
+    ctx.translate(aduX, aduY - FOOT * aduSy - 18);
+    ctx.fillStyle = "#ffe082";
+    ctx.font = "16px serif";
+    ctx.textAlign = "center";
+    for (let i = 0; i < 3; i++) {
+      const a = stateT * 5 + (i * Math.PI * 2) / 3;
+      const x = Math.cos(a) * 22;
+      const y = Math.sin(a) * 10 - 8;
+      ctx.fillText("✦", x, y);
+    }
+    ctx.restore();
+  }
+}
+
+/** 尘土和飘字 */
+function drawFx() {
+  for (const p of particles) {
+    const a = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const f of floaters) {
+    const a = 1 - f.age / f.life;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.fillStyle = f.color;
+    ctx.font = `bold ${f.size}px Songti SC, STSong, PingFang SC, serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** 脚底影子。离地越高，影子越小越淡 */
+function drawShadow() {
+  const gy = groundY();
+  const lift = clamp((gy - aduY) / 520, 0, 1);
+  ctx.save();
+  ctx.translate(aduX, gy - 1);
+  ctx.scale(1.15 - lift * 0.45, 0.28);
+  ctx.fillStyle = `rgba(0,0,0,${0.16 + (1 - lift) * 0.22})`;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 34, 34, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** 下坠时的速度线，和拍地时扩开的一圈 */
+function drawImpactMarks() {
+  if (state === "fall") {
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      const x = aduX - 24 + i * 16;
+      ctx.beginPath();
+      ctx.moveTo(x, aduY - FOOT - 10);
+      ctx.lineTo(x, aduY - FOOT - 36 - i * 8);
+      ctx.stroke();
+    }
+  }
+  if (state === "splat" || (state === "dazed" && stateT < 0.4)) {
+    const t = state === "splat" ? stateT : 0.22 + stateT;
+    ctx.strokeStyle = `rgba(255, 226, 170, ${Math.max(0, 0.8 - t * 1.6)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(aduX, groundY(), 24 + t * 220, 7 + t * 18, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+/** 左上角行情牌 */
+function drawHud(now) {
+  const price = forming ? forming.live : lastClose;
+  const prev = forming ? forming.prev : lastClose;
+  const ret = (price - prev) / prev;
+  const up = ret >= 0;
+  const names = {
+    yoyo: "甩",
+    windup: "被提起来",
+    fall: "下坠",
+    splat: "拍在地上",
+    dazed: "眼冒金星",
+    reel: "拉回来"
+  };
+  const label = names[state] || "";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
+  roundRect(14, 12, 228, 46, 10);
+  ctx.fill();
+  ctx.fillStyle = "#d7e0ea";
+  ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  ctx.fillText("蜀汉集团  002263", 26, 27);
+  ctx.font = "bold 15px PingFang SC, sans-serif";
+  ctx.fillStyle = up ? "#ff4d4f" : "#14c38e";
+  const sign = ret > 0 ? "+" : "";
+  ctx.fillText(`${price.toFixed(2)}   ${sign}${(ret * 100).toFixed(2)}%`, 26, 46);
+
+  ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  const tw = ctx.measureText(label).width;
+  ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
+  roundRect(252, 12, tw + 24, 28, 8);
+  ctx.fill();
+  ctx.fillStyle = "#ffe7a3";
+  ctx.fillText(label, 264, 26);
+
+  drawAccount(price);
+  drawHelp();
+}
+
+/** 操作说明。不展示行情阶段 */
+function drawHelp() {
+  const lines = [
+    ["↑", "输送天意", "提高下一根上涨概率，每次另有极小概率跌停"],
+    ["空格", "加仓", "按现价买入 200 股，摊薄成本"]
+  ];
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  const boxW = Math.min(460, W - 28);
+  const boxH = 64;
+  const x = W >= 980 ? W - boxW - 14 : 14;
+  const y = W >= 980 ? 12 : 156;
+  ctx.fillStyle = "rgba(8, 12, 20, 0.78)";
+  roundRect(x, y, boxW, boxH, 10);
+  ctx.fill();
+  lines.forEach((line, i) => {
+    const ly = y + 20 + i * 26;
+    ctx.fillStyle = "#ffe7a3";
+    ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+    ctx.fillText(line[0], x + 14, ly);
+    ctx.fillText(line[1], x + 52, ly);
+    ctx.fillStyle = "#d7e0ea";
+    ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+    ctx.fillText(line[2], x + 118, ly);
+  });
+}
+
+/** 持仓盈亏和天意计数。红为赚，绿为亏 */
+function drawAccount(price) {
+  const pnl = (price - avgCost) * shares;
+  const pnlPct = avgCost > 0 ? (price - avgCost) / avgCost : 0;
+  const profit = pnl >= 0;
+  const sign = pnl > 0 ? "+" : "";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
+  roundRect(14, 66, 292, 78, 10);
+  ctx.fill();
+  ctx.fillStyle = "#d7e0ea";
+  ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  const boostText = heavenBoost > 0 ? `    下根 +${Math.round(heavenBoost * 100)}%` : "";
+  ctx.fillText(`输送天意  ${heavenCount} 次${boostText}`, 26, 84);
+  ctx.fillStyle = "rgba(215,224,234,0.78)";
+  ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  ctx.fillText(`成本 ${avgCost.toFixed(2)}    持仓 ${shares}`, 26, 104);
+  ctx.font = "bold 14px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  ctx.fillStyle = profit ? "#ff4d4f" : "#14c38e";
+  ctx.fillText(`总盈亏  ${sign}${pnl.toFixed(2)}    ${sign}${(pnlPct * 100).toFixed(2)}%`, 26, 126);
+}
+
+/** 上方向键输送天意，空格按现价小幅加仓。按住不连发 */
+function onKeyDown(e) {
+  if (e.repeat) return;
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    heavenCount += 1;
+    heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
+    if (Math.random() < LIMIT_DOWN_P) heavenLimitDown = true;
+    floaters.push({
+      text: "天意",
+      x: W * 0.5,
+      y: 92,
+      vy: -28,
+      life: 0.7,
+      age: 0,
+      size: 28,
+      color: "#ffe7a3"
+    });
+    return;
+  }
+  if (e.key !== " " || shares <= 0) return;
+  e.preventDefault();
+  const px = forming ? forming.live : lastClose;
+  if (!(px > 0)) return;
+  avgCost = (avgCost * shares + px * ADD_SHARES) / (shares + ADD_SHARES);
+  shares += ADD_SHARES;
+  floaters.push({
+    text: "加仓",
+    x: 120,
+    y: 150,
+    vy: -24,
+    life: 0.7,
+    age: 0,
+    size: 22,
+    color: "#ffd27a"
+  });
+}
+
+/** 整帧 */
+function draw(now) {
+  ctx.save();
+  if (shake > 0) {
+    ctx.translate((Math.random() - 0.5) * shake * 1.6, (Math.random() - 0.5) * shake * 1.6);
+  }
+  drawMarket(now);
+  drawFloor();
+  drawShadow();
+  drawString(now);
+  drawHand(now);
+  drawImpactMarks();
+  drawAdu(now);
+  drawFlyingHorns();
+  drawFx();
+  if (flash > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${flash * 0.45})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+  drawHud(now);
+}
+
+/** 适配窗口和视网膜屏 */
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+let last = 0;
+/** 主循环。dt 封顶，避免切回标签页时一下子摔穿地板 */
+function frame(now) {
+  if (!last) {
+    last = now;
+    bootstrapMarket(now);
+    const pose = yoyoTarget(now);
+    aduX = pose.x;
+    aduY = pose.y;
+  }
+  const dt = Math.min(0.033, (now - last) / 1000);
+  last = now;
+  update(dt, now);
+  draw(now);
+  requestAnimationFrame(frame);
+}
+
+resize();
+window.addEventListener("resize", resize);
+window.addEventListener("keydown", onKeyDown);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
