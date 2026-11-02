@@ -1836,10 +1836,6 @@ const TUNES = [
 ];
 let tuneIx = 0;
 let planIx = 0;
-/** 主奏。一整轮四首曲子大约一分半，连着两轮才换下一种，不在曲与曲之间换 */
-const LEAD_VOICES = ["flute", "xiao", "zheng"];
-let leadIx = 0;
-let suitePass = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1975,39 +1971,29 @@ function pushPhrase() {
   const totalBeats = notes.reduce((sum, n) => sum + n.beats, 0);
   notes[0].padBeats = totalBeats;
   notes[0].padChord = CHORDS[item.chord];
-  const voice = LEAD_VOICES[leadIx % LEAD_VOICES.length];
-  for (const n of notes) n.voice = voice;
+  for (const n of notes) n.voice = "flute";
   phrase.push(...notes);
   planIx += 1;
   if (planIx >= tune.plan.length) {
     planIx = 0;
     tuneIx = (tuneIx + 1) % TUNES.length;
-    if (tuneIx === 0) {
-      suitePass += 1;
-      if (suitePass >= 2) {
-        suitePass = 0;
-        leadIx = (leadIx + 1) % LEAD_VOICES.length;
-      }
-    }
   }
 }
 
 /**
- * 一句底下的长音。短音少用起音，让下一颗音接上，不要重新起一下。
- * 笛偏亮，箫带一点泛音，筝是两根略微分开的弦。
+ * 一句底下的长音。短音少用起音，让下一颗音接上。
+ * 音色从头到尾不变：笛为主，薄薄叠一层箫的泛音，不再中途换成筝。
  */
-function playVoice(when, freq, dur, voice) {
-  const attack = voice === "zheng"
-    ? Math.min(0.045, Math.max(0.02, dur * 0.18))
-    : Math.min(0.06, Math.max(0.018, dur * 0.22));
+function playVoice(when, freq, dur) {
+  const attack = Math.min(0.06, Math.max(0.018, dur * 0.22));
   const hold = dur + (dur < 0.55 ? 0.1 : 0.14);
   const end = when + hold;
   const releaseAt = when + Math.max(attack + 0.04, hold * 0.72);
-  const layers = voice === "xiao"
-    ? [{ type: "sine", mul: 1, gain: 0.9 }, { type: "sine", mul: 2, gain: 0.08 }]
-    : voice === "zheng"
-      ? [{ type: "triangle", mul: 1, gain: 0.5 }, { type: "triangle", mul: 1.006, gain: 0.32 }]
-      : [{ type: "sine", mul: 1, gain: 0.75 }, { type: "triangle", mul: 2, gain: 0.08 }];
+  const layers = [
+    { type: "sine", mul: 1, gain: 0.72 },
+    { type: "triangle", mul: 1, gain: 0.14 },
+    { type: "sine", mul: 2, gain: 0.05 }
+  ];
   const peak = 0.036;
   layers.forEach((layer) => {
     const osc = audioCtx.createOscillator();
@@ -2083,7 +2069,7 @@ function updateMusic() {
     const n = phrase.shift();
     const dur = Math.max(0.08, n.beats * BEAT);
     if (n.padBeats) playPad(scheduledUntil, n.padBeats * BEAT, n.padChord);
-    if (!n.rest) playVoice(scheduledUntil, freqOf(n.degree), dur, n.voice || "flute");
+    if (!n.rest) playVoice(scheduledUntil, freqOf(n.degree), dur);
     scheduledUntil += dur;
   }
 }
