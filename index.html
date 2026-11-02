@@ -1797,7 +1797,6 @@ const CHORDS = {
 const TUNES = [
   {
     name: "春江",
-    voice: "flute",
     plan: [
       { chord: "zhi", beats: [1, 0.5, 0.5, 1, 1, 0.5, 0.5, 2], steps: [1, 1, -1, 1, 2, -1, -1] },
       { chord: "gong", beats: [0.5, 0.5, 1, 0.5, 0.5, 1, 1, 2], steps: [-1, 1, 1, -1, -1, 1, -1] },
@@ -1808,7 +1807,6 @@ const TUNES = [
   },
   {
     name: "梅花",
-    voice: "zheng",
     plan: [
       { chord: "gong", beats: [1, 0.5, 0.5, 2], steps: [1, -1, 0], repeat: 3, lift: 1 },
       { chord: "shang", beats: [1, 1, 2], steps: [-1, 1], repeat: 3 },
@@ -1818,7 +1816,6 @@ const TUNES = [
   },
   {
     name: "茉莉",
-    voice: "flute",
     plan: [
       { chord: "gong", beats: [0.5, 0.5, 1, 0.5, 0.5, 1, 2], steps: [2, -1, -1, 1, -1, -1] },
       { chord: "zhi", beats: [0.5, 0.5, 1, 1, 1, 2], steps: [1, 1, -1, 0, -1] },
@@ -1829,7 +1826,6 @@ const TUNES = [
   },
   {
     name: "阳关",
-    voice: "xiao",
     plan: [
       { chord: "yu", beats: [2, 1, 1, 2], steps: [1, -1, 1], repeat: 3, tail: [2, 2] },
       { chord: "shang", beats: [2, 2, 1, 1], steps: [-1, 1, -1], repeat: 3, tail: [2] },
@@ -1840,6 +1836,10 @@ const TUNES = [
 ];
 let tuneIx = 0;
 let planIx = 0;
+/** 主奏。一整轮四首曲子大约一分半，连着两轮才换下一种，不在曲与曲之间换 */
+const LEAD_VOICES = ["flute", "xiao", "zheng"];
+let leadIx = 0;
+let suitePass = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1975,12 +1975,20 @@ function pushPhrase() {
   const totalBeats = notes.reduce((sum, n) => sum + n.beats, 0);
   notes[0].padBeats = totalBeats;
   notes[0].padChord = CHORDS[item.chord];
-  for (const n of notes) n.voice = tune.voice;
+  const voice = LEAD_VOICES[leadIx % LEAD_VOICES.length];
+  for (const n of notes) n.voice = voice;
   phrase.push(...notes);
   planIx += 1;
   if (planIx >= tune.plan.length) {
     planIx = 0;
     tuneIx = (tuneIx + 1) % TUNES.length;
+    if (tuneIx === 0) {
+      suitePass += 1;
+      if (suitePass >= 2) {
+        suitePass = 0;
+        leadIx = (leadIx + 1) % LEAD_VOICES.length;
+      }
+    }
   }
 }
 

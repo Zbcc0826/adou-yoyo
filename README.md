@@ -6,7 +6,7 @@
 
 打开这个网页即可，不用下载：
 
-https://zbcc0826.github.io/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/
+https://zbcc0826.github.io/adou-yoyo/
 
 ## 操作
 
@@ -14,7 +14,7 @@ https://zbcc0826.github.io/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/
 
 - **输送天意**（↑）：略微提高上涨概率，也略微提高下一根出三国事件的概率。
 - **加仓**（空格）：按现价再买 200 股，把成本往现价摊薄。
-- **声音**：开关和音量在同一排。背景按春江花月夜、梅花三弄、阳关三叠、茉莉花的节奏和音程一路接下去，句和句之间不空拍。笛、筝、箫各跟一首曲子，音量很轻。摔倒、扔喇叭、输送天意、加仓也用这套开关和音量。
+- **声音**：开关和音量在同一排。背景按春江花月夜、梅花三弄、阳关三叠、茉莉花的节奏和音程一路接下去，句和句之间不空拍。笛、箫、筝隔两轮才换一次，音量很轻。摔倒、扔喇叭、输送天意、加仓也用这套开关和音量。
 
 每根 K 线有很小的概率冒出一条三国事件。字幕像天意那样打出来，并改这一根或后面几根的形态。不按史序，同一条也可以再出现。曲子按这些名曲的音程和节奏自己接，不抽随机乐句，仓库里不附带别人的歌曲录音。
 
@@ -26,4 +26,4 @@ https://zbcc0826.github.io/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/
 
 ## 关于 Release 里的 HTML
 
-[Release](https://github.com/Zbcc0826/laoshi-wan-xin-sanguo-geng-hen-kuzao-ba/releases) 里可以附上 HTML 文件，方便下载保存。GitHub 会把它当成附件下发，微信和浏览器通常只会下载，不会当成网页打开。要在微信里直接试玩，用上面的 Pages 地址。页面标题是「老实玩新三国梗很枯燥吧」。GitHub 的仓库地址不能用这句中文，所以地址用了拼音。
+[Release](https://github.com/Zbcc0826/adou-yoyo/releases) 里可以附上 HTML 文件，方便下载保存。GitHub 会把它当成附件下发，微信和浏览器通常只会下载，不会当成网页打开。要在微信里直接试玩，用上面的 Pages 地址。
