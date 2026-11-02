@@ -88,10 +88,11 @@ const FOOT = MODEL_H * DRAW;
 const PERIOD = 1.22;
 
 /**
- * 行情只在自由波动里走。
+ * 行情以自由波动为主，中间可以插入一段阴跌。
  * 从这段波动的低点涨够了，才来一轮天意撤离；
  * 从高点跌够了，才从底部扔出大喇叭。
  * 这两件事之间至少隔 QUIET_MIN 根自由波动。
+ * 单边下跌里最多连绿两根，中间要有小反弹。
  */
 let candles = [];
 let forming = null;
@@ -108,6 +109,10 @@ const HORN_DROP = 0.12;
 let quietLeft = QUIET_MIN;
 let swingHigh = 0;
 let swingLow = 0;
+/** 阴跌还剩几根。这段自由波动走到 grindAt 时开始 */
+let grindLeft = 0;
+let grindSinceUp = 0;
+let grindAt = -1;
 /** 正在飞的大喇叭，和 K 线无关 */
 let flyingHorns = [];
 
@@ -209,7 +214,10 @@ function beginQuiet(price) {
   quietLeft = QUIET_MIN + Math.floor(Math.random() * 18);
   swingHigh = price;
   swingLow = price;
-  downStreak = 0;
+  grindLeft = 0;
+  grindSinceUp = 0;
+  // 自由波动的中段磨一段阴跌，不占用天意撤离和吹喇叭的间隔
+  grindAt = 12 + Math.floor(Math.random() * 16);
 }
 
 /** 底部吹喇叭时的价格只是一小段普通上涨，喇叭本身另外画 */
@@ -230,13 +238,38 @@ function pushHornRise() {
   regime = "script";
 }
 
-/** 涨高之后天意撤离：连续几根带超长上影的绿柱 */
+/**
+ * 涨高之后天意撤离。
+ * 绿柱仍带超长上影，但每连跌两根就插一根小阳，不能一路纯绿。
+ */
 function pushHeavenExit() {
-  const bars = 6 + Math.floor(Math.random() * 3);
+  const bars = 8 + Math.floor(Math.random() * 3);
+  let sinceUp = Math.min(2, downStreak);
   for (let i = 0; i < bars; i++) {
-    script.push({ ret: -(0.016 + Math.random() * 0.02), kind: "exit", launch: false });
+    if (sinceUp >= 2) {
+      script.push({ ret: 0.004 + Math.random() * 0.006, kind: "free", launch: false });
+      sinceUp = 0;
+    } else {
+      script.push({ ret: -(0.016 + Math.random() * 0.018), kind: "exit", launch: false });
+      sinceUp += 1;
+    }
   }
   regime = "script";
+}
+
+/** 阴跌的下一根：小阴为主，连着两根就反弹一小段，不允许第三根还是绿 */
+function grindStep() {
+  grindLeft -= 1;
+  let ret;
+  const needBounce = grindSinceUp >= 2 || (grindSinceUp === 1 && Math.random() < 0.28);
+  if (needBounce) {
+    ret = 0.003 + Math.random() * 0.005;
+    grindSinceUp = 0;
+  } else {
+    ret = -(0.006 + Math.random() * 0.008);
+    grindSinceUp += 1;
+  }
+  return { ret, kind: ret < 0 ? "grind" : "free", launch: false };
 }
 
 /** 自由波动。最多连跌两根，偶尔一根跌破 5% 让阿斗摔下去 */
@@ -260,8 +293,14 @@ function takeStep(price) {
     if (!script.length) finishScript = true;
     return step;
   }
+  if (grindLeft > 0) return grindStep();
   if (quietLeft > 0) {
     quietLeft -= 1;
+    if (quietLeft === grindAt) {
+      grindLeft = 12 + Math.floor(Math.random() * 7);
+      grindSinceUp = Math.min(2, downStreak);
+      return grindStep();
+    }
     return freeStep();
   }
   const fromLow = swingLow > 0 ? (price - swingLow) / swingLow : 0;
@@ -332,6 +371,12 @@ function makeCandle(prev, live) {
     const low = Math.min(open, close) * (1 - 0.003);
     pts = [open, high, low, close];
     times = [0, 0.22, 0.78, 1];
+  } else if (step.kind === "grind") {
+    // 阴跌：实体小，上影略长于实体，收在这根的下半
+    const high = Math.max(open, prev) * (1 + 0.004 + Math.random() * 0.008);
+    const low = Math.min(open, close) * (1 - Math.random() * 0.003);
+    pts = [open, high, low, close];
+    times = [0, 0.28, 0.72, 1];
   } else if (ret <= -0.05) {
     const top = Math.max(open, prev) * (1 + Math.random() * 0.005);
     const low = close * (1 - Math.random() * 0.008);
@@ -397,6 +442,9 @@ function bootstrapMarket(now) {
   regime = "free";
   quietLeft = 6;
   downStreak = 0;
+  grindLeft = 0;
+  grindSinceUp = 0;
+  grindAt = 3;
   swingHigh = price;
   swingLow = price;
   crashCool = 4;
