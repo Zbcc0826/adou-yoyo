@@ -113,6 +113,10 @@ let swingLow = 0;
 let grindLeft = 0;
 let grindSinceUp = 0;
 let grindAt = -1;
+/** 三国事件排好的后续 K 线，不重置自由波动 */
+let taleQ = [];
+/** 每根 K 线触发一条三国事件的概率。不按史序，也不排重 */
+const TALE_P = 0.02;
 /** 正在飞的大喇叭，和 K 线无关 */
 let flyingHorns = [];
 
@@ -263,7 +267,7 @@ function pushHeavenExit() {
 function grindStep() {
   grindLeft -= 1;
   let ret;
-  const needBounce = grindSinceUp >= 2 || (grindSinceUp === 1 && Math.random() < 0.28);
+  const needBounce = downStreak >= 2 || grindSinceUp >= 2 || (grindSinceUp === 1 && Math.random() < 0.28);
   if (needBounce) {
     ret = 0.003 + Math.random() * 0.005;
     grindSinceUp = 0;
@@ -272,6 +276,149 @@ function grindStep() {
     grindSinceUp += 1;
   }
   return { ret, kind: ret < 0 ? "grind" : "free", launch: false };
+}
+
+/**
+ * 三国事件。title 是演出名，line 是字幕。
+ * shape 决定形态，span 是连着影响的根数。
+ * 演义里的事和新三国里的短句都收在这里，抽出哪条纯随机。
+ */
+const TALES = [
+  { title: "桃园结义", line: "不求同年同月同日生", shape: "rise", span: 3 },
+  { title: "温酒斩华雄", line: "酒尚温时", shape: "maruUp", span: 1 },
+  { title: "三英战吕布", line: "三英战吕布", shape: "duel", span: 4 },
+  { title: "煮酒论英雄", line: "龙，可是帝王之征啊", shape: "dragon", span: 1 },
+  { title: "过五关", line: "过五关，斩六将", shape: "rise", span: 5 },
+  { title: "官渡之战", line: "乌巢一炬", shape: "reversal", span: 3 },
+  { title: "三顾茅庐", line: "孤之有孔明，犹鱼之有水也", shape: "dojiRise", span: 2 },
+  { title: "舌战群儒", line: "我从未见过如此厚颜无耻之人", shape: "tongue", span: 1 },
+  { title: "草船借箭", line: "谢丞相的箭", shape: "spikeUp", span: 1 },
+  { title: "借东风", line: "万事俱备，只欠东风", shape: "rise", span: 4 },
+  { title: "火烧赤壁", line: "谈笑间，樯橹灰飞烟灭", shape: "burn", span: 3 },
+  { title: "长坂坡", line: "出来吧，皇叔", shape: "spikeUp", span: 1 },
+  { title: "华容道", line: "丞相的恩情，云不敢忘", shape: "doji", span: 1 },
+  { title: "单刀赴会", line: "单刀赴会", shape: "dragon", span: 1 },
+  { title: "水淹七军", line: "水淹七军", shape: "fall", span: 3 },
+  { title: "刮骨疗毒", line: "大丈夫", shape: "maruUp", span: 1 },
+  { title: "走麦城", line: "大意失荆州", shape: "crash", span: 1 },
+  { title: "白帝托孤", line: "君才十倍曹丕", shape: "spikeDown", span: 1 },
+  { title: "火烧连营", line: "火烧连营七百里", shape: "burn", span: 4 },
+  { title: "空城计", line: "我本是卧龙岗散淡的人", shape: "doji", span: 1 },
+  { title: "七擒孟获", line: "七擒七纵", shape: "duel", span: 7 },
+  { title: "星落五丈原", line: "将星陨落", shape: "spikeDown", span: 1 },
+  { title: "既生瑜", line: "既生瑜，何生亮", shape: "spikeDown", span: 1 },
+  { title: "宁我负人", line: "宁教我负天下人", shape: "maruDown", span: 1 },
+  { title: "分久必合", line: "合久必分，分久必合", shape: "duel", span: 2 },
+  { title: "乐不思蜀", line: "此间乐，不思蜀", shape: "rise", span: 1 },
+  { title: "伏龙凤雏", line: "两人得一，可安天下", shape: "rise", span: 3 },
+  { title: "大意失荆州", line: "荆州已失", shape: "fall", span: 3 }
+];
+
+/** 把一条三国事件拆成一根或连续几根特殊 K 线 */
+function pushTale(tale) {
+  const span = Math.max(1, tale.span || 1);
+  let since = Math.min(2, downStreak);
+  const steps = [];
+  function add(ret, shape) {
+    steps.push({
+      ret,
+      shape,
+      kind: "tale",
+      launch: false,
+      taleTitle: steps.length ? "" : tale.title,
+      taleLine: steps.length ? "" : tale.line
+    });
+  }
+  if (tale.shape === "crash") {
+    if (since >= 2) add(0.005 + Math.random() * 0.003, "bounce");
+    add(-(0.062 + Math.random() * 0.02), "crash");
+  } else if (tale.shape === "rise") {
+    let up = 0;
+    for (let i = 0; i < span; i++) {
+      if (up >= 2) {
+        add(-(0.003 + Math.random() * 0.004), "bounce");
+        up = 0;
+      } else {
+        add(0.007 + Math.random() * 0.009, "rise");
+        up += 1;
+      }
+    }
+  } else if (tale.shape === "fall" || tale.shape === "burn") {
+    for (let i = 0; i < span; i++) {
+      if (since >= 2) {
+        add(0.004 + Math.random() * 0.005, "bounce");
+        since = 0;
+      } else {
+        const mag = tale.shape === "burn" ? 0.012 + Math.random() * 0.012 : 0.007 + Math.random() * 0.008;
+        add(-mag, tale.shape);
+        since += 1;
+      }
+    }
+  } else if (tale.shape === "duel") {
+    for (let i = 0; i < span; i++) {
+      const mag = 0.008 + Math.random() * 0.01;
+      if (since >= 2 || i % 2 === 1) {
+        add(mag, "duel");
+        since = 0;
+      } else {
+        add(-mag, "duel");
+        since += 1;
+      }
+    }
+  } else if (tale.shape === "reversal") {
+    for (let i = 0; i < Math.max(1, span - 1); i++) {
+      if (since >= 2) {
+        add(0.004 + Math.random() * 0.003, "bounce");
+        since = 0;
+      } else {
+        add(-(0.008 + Math.random() * 0.008), "burn");
+        since += 1;
+      }
+    }
+    add(0.018 + Math.random() * 0.012, "maruUp");
+  } else if (tale.shape === "dojiRise") {
+    if (since >= 2) add(0.004 + Math.random() * 0.003, "bounce");
+    add((Math.random() - 0.5) * 0.002, "doji");
+    add(0.01 + Math.random() * 0.008, "rise");
+  } else if (tale.shape === "dragon") {
+    add(0.004 + Math.random() * 0.008, "dragon");
+  } else if (tale.shape === "spikeDown") {
+    if (since >= 2) add(0.004 + Math.random() * 0.003, "bounce");
+    add(-(0.01 + Math.random() * 0.012), "spikeDown");
+  } else if (tale.shape === "spikeUp") {
+    add(0.01 + Math.random() * 0.012, "spikeUp");
+  } else if (tale.shape === "doji") {
+    let ret = (Math.random() - 0.5) * 0.0024;
+    if (since >= 2 && ret < 0) ret = 0.001 + Math.random() * 0.0015;
+    add(ret, "doji");
+  } else if (tale.shape === "tongue") {
+    add(0.006 + Math.random() * 0.008, "tongue");
+  } else if (tale.shape === "maruUp") {
+    add(0.024 + Math.random() * 0.012, "maruUp");
+  } else if (tale.shape === "maruDown") {
+    if (since >= 2) add(0.004 + Math.random() * 0.003, "bounce");
+    add(-(0.022 + Math.random() * 0.012), "maruDown");
+  } else {
+    add(0.006, "rise");
+  }
+  taleQ.push(...steps);
+}
+
+/** 三国事件的字幕。样式接近天意播报，多一行事件名 */
+function showTale(title, line) {
+  const spot = announceAt(0, -56, true);
+  floaters.push({
+    banner: true,
+    title,
+    text: line,
+    x: spot.x,
+    y: spot.y,
+    vy: -4,
+    life: 2.8,
+    age: 0,
+    size: 22,
+    color: "#fff6d8"
+  });
 }
 
 /** 自由波动。最多连跌两根，偶尔一根跌破 5% 让阿斗摔下去 */
@@ -294,6 +441,11 @@ function takeStep(price) {
     const step = script.shift();
     if (!script.length) finishScript = true;
     return step;
+  }
+  if (taleQ.length) return taleQ.shift();
+  if (Math.random() < TALE_P) {
+    pushTale(TALES[Math.floor(Math.random() * TALES.length)]);
+    return takeStep(price);
   }
   if (grindLeft > 0) return grindStep();
   if (quietLeft > 0) {
@@ -328,14 +480,14 @@ function consumeHeaven(step) {
   heavenLimitDown = false;
   heavenBoost = 0;
   if (limit) {
-    return { ret: LIMIT_DOWN_RET, kind: "limit", hornId: 0, flare: 0 };
+    return { ...step, ret: LIMIT_DOWN_RET, kind: "limit", shape: "crash" };
   }
   if (boost > 0 && step.ret < 0 && Math.random() < boost) {
     return {
+      ...step,
       ret: 0.006 + Math.random() * 0.016,
-      kind: step.kind === "horn" ? "horn" : step.kind,
-      hornId: step.hornId || 0,
-      flare: step.flare || 0
+      shape: "bounce",
+      kind: "tale"
     };
   }
   return step;
@@ -354,6 +506,45 @@ function evalPath(pts, times, t) {
   return pts[pts.length - 1];
 }
 
+/** 三国事件的特殊形态。没有对应形状时返回空，走普通 K 线 */
+function shapePath(step, open, close, prev) {
+  const shape = step.shape;
+  if (!shape || shape === "rise" || shape === "bounce" || shape === "fall") return null;
+  if (shape === "crash") return null;
+  if (shape === "dragon" || shape === "spikeDown" || shape === "tongue") {
+    const lift = shape === "dragon" ? 0.055 : shape === "tongue" ? 0.038 : 0.046;
+    const high = Math.max(open, prev) * (1 + lift + Math.random() * 0.02);
+    const low = Math.min(open, close) * (1 - (shape === "tongue" ? 0.014 : 0.002));
+    return { pts: [open, high, low, close], times: [0, 0.24, 0.78, 1] };
+  }
+  if (shape === "spikeUp") {
+    const low = Math.min(open, close, prev) * (1 - 0.03 - Math.random() * 0.018);
+    const high = Math.max(open, close) * (1 + 0.004);
+    return { pts: [open, low, high, close], times: [0, 0.28, 0.7, 1] };
+  }
+  if (shape === "doji") {
+    const high = prev * (1.012 + Math.random() * 0.012);
+    const low = prev * (0.988 - Math.random() * 0.012);
+    return { pts: [open, high, low, close], times: [0, 0.3, 0.7, 1] };
+  }
+  if (shape === "maruUp" || shape === "maruDown") {
+    const high = Math.max(open, close) * 1.0012;
+    const low = Math.min(open, close) * 0.9988;
+    return { pts: [open, low, high, close], times: [0, 0.2, 0.55, 1] };
+  }
+  if (shape === "duel") {
+    const high = Math.max(open, close, prev) * (1.012 + Math.random() * 0.01);
+    const low = Math.min(open, close, prev) * (0.988 - Math.random() * 0.01);
+    return { pts: [open, high, low, close], times: [0, 0.3, 0.7, 1] };
+  }
+  if (shape === "burn") {
+    const high = Math.max(open, prev) * (1.028 + Math.random() * 0.018);
+    const low = Math.min(open, close) * 0.998;
+    return { pts: [open, high, low, close], times: [0, 0.22, 0.75, 1] };
+  }
+  return null;
+}
+
 /**
  * 造一根 K 线。live 为真时，跌破 5% 才会把阿斗摔下去。
  * 喇叭口朝上：上影随 flare 拉长。
@@ -362,12 +553,17 @@ function makeCandle(prev, live) {
   const raw = takeStep(prev);
   if (live && raw.launch) launchHorns();
   const step = live ? consumeHeaven(raw) : raw;
+  if (live && step.taleTitle) showTale(step.taleTitle, step.taleLine);
   const ret = step.ret;
   const close = Math.max(1.5, prev * (1 + ret));
   const open = prev * (1 + (Math.random() - 0.5) * 0.0025);
   let pts;
   let times;
-  if (step.kind === "exit") {
+  const shaped = shapePath(step, open, close, prev);
+  if (shaped) {
+    pts = shaped.pts;
+    times = shaped.times;
+  } else if (step.kind === "exit") {
     // 先冲高，再收在更低的位置，留下很长的上影，颜色按收盘相对前收算是绿
     const high = Math.max(open, prev) * (1 + 0.07 + Math.random() * 0.06);
     const low = Math.min(open, close) * (1 - 0.003);
@@ -447,6 +643,7 @@ function bootstrapMarket(now) {
   grindLeft = 0;
   grindSinceUp = 0;
   grindAt = 3;
+  taleQ = [];
   swingHigh = price;
   swingLow = price;
   crashCool = 4;
@@ -611,8 +808,9 @@ function beginSplat() {
 }
 
 /** 播报位置。手机上顶栏和说明卡会挡住画面上沿，所以落在卡片下面 */
-function announceAt(dx, dy) {
-  const clearTop = W >= 980 ? 200 : 268;
+function announceAt(dx, dy, banner) {
+  // 事件字幕是一块两行卡片，还要往上飘一会儿，手机上要留出说明卡的高度
+  const clearTop = W >= 980 ? 200 : banner ? 318 : 268;
   const y = clamp(H * 0.5 + dy, clearTop, Math.max(clearTop, H - 120));
   const x = clamp(W * 0.5 + dx, 72, Math.max(72, W - 72));
   return { x, y };
@@ -1299,11 +1497,39 @@ function drawFloaters() {
   for (const f of floaters) {
     const a = 1 - f.age / f.life;
     ctx.globalAlpha = Math.max(0, a);
-    ctx.fillStyle = f.color;
-    ctx.font = `bold ${f.size}px Songti SC, STSong, PingFang SC, serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(f.text, f.x, f.y);
+    if (f.banner) {
+      let size = f.size;
+      const maxW = W - 28;
+      ctx.font = `bold ${size}px Songti SC, STSong, PingFang SC, serif`;
+      while (size > 15 && ctx.measureText(f.text).width > maxW) {
+        size -= 1;
+        ctx.font = `bold ${size}px Songti SC, STSong, PingFang SC, serif`;
+      }
+      ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+      const titleW = ctx.measureText(f.title || "").width;
+      ctx.font = `bold ${size}px Songti SC, STSong, PingFang SC, serif`;
+      const textW = ctx.measureText(f.text).width;
+      const boxW = Math.min(maxW, Math.max(titleW, textW) + 32);
+      const boxH = 46;
+      ctx.fillStyle = "rgba(8, 12, 20, 0.86)";
+      roundRect(f.x - boxW / 2, f.y - boxH / 2, boxW, boxH, 10);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 231, 163, 0.9)";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+      ctx.fillStyle = "#ffd27a";
+      ctx.fillText(f.title || "", f.x, f.y - 11);
+      ctx.font = `bold ${size}px Songti SC, STSong, PingFang SC, serif`;
+      ctx.fillStyle = "#fff6d8";
+      ctx.fillText(f.text, f.x, f.y + 10);
+    } else {
+      ctx.fillStyle = f.color;
+      ctx.font = `bold ${f.size}px Songti SC, STSong, PingFang SC, serif`;
+      ctx.fillText(f.text, f.x, f.y);
+    }
   }
   ctx.globalAlpha = 1;
 }
@@ -1514,6 +1740,25 @@ let scheduledUntil = 0;
 /** 笛、箫、筝轮流当主奏，避免从头到尾同一种跳音 */
 const VOICES = ["flute", "xiao", "zheng"];
 let voiceIx = 0;
+/**
+ * 传统曲子里反复出现的五声和弦。
+ * 宫=宫角徵，徵=徵宫商，羽=羽宫角，商=商徵羽。
+ * 春江花月夜、梅花三弄、阳关三叠、茉莉花各用自己的进行。
+ */
+const CHORDS = {
+  gong: [0, 2, 3],
+  zhi: [3, 0, 1],
+  yu: [4, 0, 2],
+  shang: [1, 3, 4]
+};
+const TUNES = [
+  { name: "春江", seq: ["zhi", "gong", "yu", "zhi", "gong"] },
+  { name: "梅花", seq: ["gong", "shang", "zhi", "gong"] },
+  { name: "阳关", seq: ["yu", "shang", "yu", "gong"] },
+  { name: "茉莉", seq: ["gong", "zhi", "gong", "yu", "gong"] }
+];
+let tuneIx = 0;
+let chordIx = 0;
 
 function applyMusicGain() {
   if (!musicGain || !audioCtx) return;
@@ -1566,22 +1811,44 @@ function freqOf(deg) {
   return GONG_HZ * Math.pow(2, oct + PENTA[i] / 12);
 }
 
-/** 低音宫和徵一直垫着，句子之间也不会空出一截 */
+/** 只留很轻的一根低音宫，和弦进行另铺 */
 function startDrone() {
   const bed = audioCtx.createGain();
-  // 低音只垫一层，音量压在旋律下面
-  bed.gain.value = 0.006;
+  bed.gain.value = 0.003;
   bed.connect(musicGain);
-  [GONG_HZ / 2, (GONG_HZ / 2) * 1.004, freqOf(3) / 2].forEach((freq, i) => {
-    const osc = audioCtx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    const g = audioCtx.createGain();
-    g.gain.value = i === 2 ? 0.35 : 1;
-    osc.connect(g);
-    g.connect(bed);
-    osc.start();
-  });
+  const osc = audioCtx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.value = GONG_HZ / 2;
+  osc.connect(bed);
+  osc.start();
+}
+
+/** 把音高收到当前和弦里，经过音仍允许小步离开 */
+function nearestInChord(deg, chord) {
+  let best = chord[0];
+  let bestD = 99;
+  for (const tone of chord) {
+    for (const shift of [-5, 0, 5]) {
+      const cand = tone + shift;
+      const dist = Math.abs(cand - deg);
+      if (dist < bestD) {
+        bestD = dist;
+        best = cand;
+      }
+    }
+  }
+  return Math.max(-2, Math.min(5, best));
+}
+
+function nextChord() {
+  const tune = TUNES[tuneIx % TUNES.length];
+  const chord = CHORDS[tune.seq[chordIx % tune.seq.length]];
+  chordIx += 1;
+  if (chordIx >= tune.seq.length) {
+    chordIx = 0;
+    if (Math.random() < 0.45) tuneIx = (tuneIx + 1) % TUNES.length;
+  }
+  return chord;
 }
 
 /** 下一句：节奏型半循环，音高在五声里小步走，句尾回到宫 */
@@ -1592,7 +1859,8 @@ function pushPhrase() {
   const reps = Math.random() < 0.62 ? 2 : 1;
   const voice = VOICES[voiceIx % VOICES.length];
   voiceIx += 1;
-  degree = Math.random() < 0.7 ? 0 : 3;
+  const chord = nextChord();
+  degree = chord[0];
   const built = [];
   for (let r = 0; r < reps; r++) {
     for (const beats of cell) {
@@ -1610,17 +1878,21 @@ function pushPhrase() {
       degree += step;
       if (degree > 5) degree -= 5;
       if (degree < -2) degree += 5;
+      if (Math.random() < 0.62) degree = nearestInChord(degree, chord);
       built.push({ rest: false, beats, degree, voice });
     }
   }
   for (let i = built.length - 1; i >= 0; i--) {
     if (!built[i].rest) {
-      built[i].degree = 0;
+      built[i].degree = chord[0];
       break;
     }
   }
   const totalBeats = built.reduce((sum, n) => sum + n.beats, 0);
-  if (built.length) built[0].padBeats = totalBeats;
+  if (built.length) {
+    built[0].padBeats = totalBeats;
+    built[0].padChord = chord;
+  }
   phrase.push(...built);
   phrase.push({ rest: true, beats: 0.7, voice });
 }
@@ -1657,21 +1929,26 @@ function playVoice(when, freq, dur, voice) {
   });
 }
 
-/** 每一句开始时铺一根低音宫，把上面的旋律粘住 */
-function playPad(when, dur) {
-  const osc = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
-  osc.type = "sine";
-  osc.frequency.setValueAtTime(GONG_HZ / 2, when);
-  const end = when + dur + 0.4;
-  g.gain.setValueAtTime(0.0001, when);
-  g.gain.linearRampToValueAtTime(0.006, when + 0.28);
-  g.gain.linearRampToValueAtTime(0.005, Math.min(end - 0.05, when + Math.max(0.4, dur * 0.7)));
-  g.gain.exponentialRampToValueAtTime(0.0001, end);
-  osc.connect(g);
-  g.connect(musicGain);
-  osc.start(when);
-  osc.stop(end + 0.02);
+/** 按当前曲子的和弦铺三个很轻的音，音量保持在旋律下面 */
+function playPad(when, dur, chord) {
+  const tones = chord && chord.length ? chord : [0, 2, 3];
+  const end = when + dur + 0.35;
+  const mid = Math.min(end - 0.05, when + Math.max(0.35, dur * 0.65));
+  tones.forEach((deg, i) => {
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freqOf(deg) / 2, when);
+    const peak = i === 0 ? 0.0042 : 0.0024;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.linearRampToValueAtTime(peak, when + 0.3);
+    g.gain.linearRampToValueAtTime(Math.max(0.0002, peak * 0.8), mid);
+    g.gain.exponentialRampToValueAtTime(0.0001, end);
+    osc.connect(g);
+    g.connect(musicGain);
+    osc.start(when);
+    osc.stop(end + 0.02);
+  });
 }
 
 /** 往前排两秒左右的旋律。声音关掉时不排，避免积一长串 */
@@ -1683,7 +1960,7 @@ function updateMusic() {
     if (!phrase.length) pushPhrase();
     const n = phrase.shift();
     const dur = Math.max(0.08, n.beats * BEAT);
-    if (n.padBeats) playPad(scheduledUntil, n.padBeats * BEAT);
+    if (n.padBeats) playPad(scheduledUntil, n.padBeats * BEAT, n.padChord);
     if (!n.rest) playVoice(scheduledUntil, freqOf(n.degree), dur, n.voice || "flute");
     scheduledUntil += dur;
   }
