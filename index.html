@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>阿斗溜溜球</title>
+<title>老实玩新三国梗很枯燥吧</title>
 <style>
   html, body {
     margin: 0;
@@ -117,6 +117,10 @@ let grindAt = -1;
 let taleQ = [];
 /** 每根 K 线触发一条三国事件的概率。不按史序，也不排重 */
 const TALE_P = 0.02;
+/** 输送天意时，下一根额外增加的事件概率，可连按但封顶。只留给还没生成的那一根 */
+const TALE_BOOST_STEP = 0.04;
+const TALE_BOOST_CAP = 0.16;
+let taleBoost = 0;
 /** 正在飞的大喇叭，和 K 线无关 */
 let flyingHorns = [];
 
@@ -311,7 +315,49 @@ const TALES = [
   { title: "分久必合", line: "合久必分，分久必合", shape: "duel", span: 2 },
   { title: "乐不思蜀", line: "此间乐，不思蜀", shape: "rise", span: 1 },
   { title: "伏龙凤雏", line: "两人得一，可安天下", shape: "rise", span: 3 },
-  { title: "大意失荆州", line: "荆州已失", shape: "fall", span: 3 }
+  { title: "大意失荆州", line: "荆州已失", shape: "fall", span: 3 },
+  { title: "怒鞭督邮", line: "安能复为小吏", shape: "maruDown", span: 1 },
+  { title: "孟德献刀", line: "操固疑之", shape: "spikeUp", span: 1 },
+  { title: "三让徐州", line: "陶恭祖三让徐州", shape: "dojiRise", span: 2 },
+  { title: "辕门射戟", line: "辕门射戟", shape: "spikeUp", span: 1 },
+  { title: "凤仪亭", line: "奉先何故起疑", shape: "tongue", span: 1 },
+  { title: "白门楼", line: "人中吕布，马中赤兔", shape: "crash", span: 1 },
+  { title: "挟天子", line: "挟天子以令诸侯", shape: "rise", span: 3 },
+  { title: "衣带诏", line: "衣带诏", shape: "doji", span: 1 },
+  { title: "割须弃袍", line: "割须弃袍", shape: "spikeDown", span: 1 },
+  { title: "挂印封金", line: "降汉不降曹", shape: "doji", span: 1 },
+  { title: "千里走单骑", line: "千里走单骑", shape: "rise", span: 5 },
+  { title: "古城会", line: "古城会", shape: "rise", span: 2 },
+  { title: "喝断当阳桥", line: "燕人张翼德在此", shape: "dragon", span: 1 },
+  { title: "单骑救主", line: "我乃常山赵子龙", shape: "spikeUp", span: 1 },
+  { title: "火烧新野", line: "火烧新野", shape: "burn", span: 3 },
+  { title: "携民渡江", line: "携民渡江", shape: "fall", span: 3 },
+  { title: "蒋干盗书", line: "蒋干盗书", shape: "doji", span: 1 },
+  { title: "苦肉计", line: "周瑜打黄盖", shape: "duel", span: 2 },
+  { title: "横槊赋诗", line: "对酒当歌，人生几何", shape: "dragon", span: 1 },
+  { title: "连环计", line: "庞统巧授连环计", shape: "burn", span: 2 },
+  { title: "甘露寺", line: "周郎妙计安天下", shape: "reversal", span: 3 },
+  { title: "赔了夫人", line: "赔了夫人又折兵", shape: "reversal", span: 3 },
+  { title: "三气周瑜", line: "三气周瑜", shape: "fall", span: 3 },
+  { title: "截江夺斗", line: "截江夺阿斗", shape: "spikeUp", span: 1 },
+  { title: "张松献图", line: "张松献西川", shape: "rise", span: 2 },
+  { title: "定军山", line: "刀劈夏侯渊", shape: "maruDown", span: 1 },
+  { title: "威震逍遥津", line: "张辽止啼", shape: "spikeDown", span: 1 },
+  { title: "裸衣斗马超", line: "锦马超", shape: "duel", span: 3 },
+  { title: "义释严颜", line: "但有断头将军", shape: "dojiRise", span: 2 },
+  { title: "出师表", line: "鞠躬尽瘁，死而后已", shape: "rise", span: 3 },
+  { title: "挥泪斩马谡", line: "谋事在人，成事在天", shape: "spikeDown", span: 1 },
+  { title: "上方谷", line: "上方谷", shape: "burn", span: 3 },
+  { title: "木牛流马", line: "木牛流马", shape: "rise", span: 2 },
+  { title: "安居平五路", line: "安居平五路", shape: "rise", span: 3 },
+  { title: "七星灯", line: "将星将坠", shape: "spikeDown", span: 1 },
+  { title: "偷渡阴平", line: "邓艾偷渡阴平", shape: "fall", span: 4 },
+  { title: "许田打围", line: "许田打围", shape: "spikeUp", span: 1 },
+  { title: "治世能臣", line: "治世之能臣，乱世之奸雄", shape: "dragon", span: 1 },
+  { title: "望梅止渴", line: "望梅止渴", shape: "rise", span: 1 },
+  { title: "拔矢啖睛", line: "父精母血，不可弃之", shape: "maruUp", span: 1 },
+  { title: "说曹操", line: "说曹操，曹操到", shape: "spikeUp", span: 1 },
+  { title: "鸡肋", line: "鸡肋", shape: "doji", span: 1 }
 ];
 
 /** 把一条三国事件拆成一根或连续几根特殊 K 线 */
@@ -414,7 +460,7 @@ function showTale(title, line) {
     x: spot.x,
     y: spot.y,
     vy: -4,
-    life: 2.8,
+    life: 1.15,
     age: 0,
     size: 22,
     color: "#fff6d8"
@@ -437,15 +483,24 @@ function freeStep() {
 
 /** 下一根 K 线。安静期没走完时，不允许吹喇叭，也不允许天意撤离 */
 function takeStep(price) {
-  if (script.length) {
+  if (taleQ.length) return taleQ.shift();
+  // 天意加成只掷一次，用在即将生成的这一根上；没有加成时，剧本进行中不插事件
+  const boosted = taleBoost > 0;
+  const taleP = boosted ? Math.min(0.4, TALE_P + taleBoost) : TALE_P;
+  if (boosted) taleBoost = 0;
+  if (script.length && !boosted) {
     const step = script.shift();
     if (!script.length) finishScript = true;
     return step;
   }
-  if (taleQ.length) return taleQ.shift();
-  if (Math.random() < TALE_P) {
+  if (Math.random() < taleP) {
     pushTale(TALES[Math.floor(Math.random() * TALES.length)]);
     return takeStep(price);
+  }
+  if (script.length) {
+    const step = script.shift();
+    if (!script.length) finishScript = true;
+    return step;
   }
   if (grindLeft > 0) return grindStep();
   if (quietLeft > 0) {
@@ -644,6 +699,7 @@ function bootstrapMarket(now) {
   grindSinceUp = 0;
   grindAt = 3;
   taleQ = [];
+  taleBoost = 0;
   swingHigh = price;
   swingLow = price;
   crashCool = 4;
@@ -1614,7 +1670,7 @@ function drawHud(now) {
 /** 操作说明。不展示行情阶段 */
 function drawHelp() {
   const lines = [
-    ["↑", "输送天意", "略微提高上涨概率"],
+    ["↑", "输送天意", "略微提高上涨和出事件的概率"],
     ["空格", "加仓", "按现价买入 200 股，摊薄成本"]
   ];
   ctx.textAlign = "left";
@@ -1667,6 +1723,7 @@ function drawAccount(price) {
 function sendHeaven() {
   heavenCount += 1;
   heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
+  taleBoost = Math.min(TALE_BOOST_CAP, taleBoost + TALE_BOOST_STEP);
   if (Math.random() < LIMIT_DOWN_P) heavenLimitDown = true;
   const heavenMsg = announceAt(0, -36);
   floaters.push({
