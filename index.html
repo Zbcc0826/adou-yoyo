@@ -65,7 +65,7 @@
 <div id="dock">
   <button type="button" id="btn-heaven">输送天意</button>
   <button type="button" id="btn-add">加仓</button>
-  <button type="button" id="btn-music" class="ghost">音乐关</button>
+  <button type="button" id="btn-music" class="ghost">声音关</button>
   <label class="vol">音量 <input id="vol" type="range" min="0" max="100" value="40"></label>
 </div>
 <script>
@@ -519,6 +519,7 @@ function beginFall() {
   vy = 220;
   vx = (aduX - W * 0.5) * 0.35;
   rotV = (aduX > W * 0.5 ? 1 : -1) * 1.5;
+  sfxFall();
   aduSx = 0.86;
   aduSy = 1.22;
 }
@@ -533,6 +534,7 @@ function beginSplat() {
   aduRot = clamp(aduRot, -0.4, 0.4);
   shake = 20 + Math.min(16, Math.abs(slamPct));
   flash = 0.72;
+  sfxSplat();
   spawnImpact(aduX);
   floaters.push({
     text: "啪",
@@ -729,6 +731,7 @@ function launchHorns() {
       scale: 0.9 + Math.random() * 0.85
     });
   }
+  sfxHorns();
 }
 
 /** 喇叭抛出去之后会减速下落 */
@@ -1383,6 +1386,7 @@ function sendHeaven() {
     size: 28,
     color: "#ffe7a3"
   });
+  sfxHeaven();
 }
 
 /** 按现价加一笔仓，把成本往现价摊 */
@@ -1402,6 +1406,7 @@ function addPosition() {
     size: 22,
     color: "#ffd27a"
   });
+  sfxAdd();
 }
 
 /**
@@ -1437,17 +1442,18 @@ function ensureMusic() {
     const data = buffer.getChannelData(0);
     let brown = 0;
     for (let i = 0; i < count; i++) {
-      brown = (brown + (Math.random() * 2 - 1) * 0.04) * 0.98;
-      data[i] = brown;
+      brown = (brown + (Math.random() * 2 - 1) * 0.02) * 0.96;
+      data[i] = brown * 0.22;
     }
     const src = audioCtx.createBufferSource();
     src.buffer = buffer;
     src.loop = true;
     const filter = audioCtx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.value = 900;
+    filter.frequency.value = 520;
     const rain = audioCtx.createGain();
-    rain.gain.value = 0.55;
+    // 雨声只做很轻的底，不要盖过旋律和音效
+    rain.gain.value = 0.045;
     src.connect(filter);
     filter.connect(rain);
     rain.connect(musicGain);
@@ -1483,9 +1489,94 @@ function updateMusic(now) {
   tuneI += 1;
 }
 
+/**
+ * 音效走同一路总音量。声音关掉，或还没点开过声音时，直接不响。
+ * peak 是进总音量之前的响度。
+ */
+function playTone(when, freq, dur, type, peak, slideTo) {
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(Math.max(40, freq), when);
+  if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), when + dur);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), when + Math.min(0.03, dur * 0.25));
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  osc.connect(g);
+  g.connect(musicGain);
+  osc.start(when);
+  osc.stop(when + dur + 0.02);
+}
+
+/** 落地的一声闷响 */
+function noiseThud(when, dur, peak) {
+  const n = Math.max(1, Math.floor(audioCtx.sampleRate * dur));
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 180;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(peak, when);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(musicGain);
+  src.start(when);
+  src.stop(when + dur + 0.02);
+}
+
+function canPlaySfx() {
+  return musicOn && audioCtx && musicGain;
+}
+
+/** 下坠时的短下滑音 */
+function sfxFall() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 640, 0.22, "sine", 0.05, 180);
+}
+
+/** 拍在地上 */
+function sfxSplat() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 140, 0.26, "sine", 0.2, 46);
+  noiseThud(t, 0.14, 0.16);
+}
+
+/** 往上扔喇叭时响三声，不按只数叠 */
+function sfxHorns() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  for (let i = 0; i < 3; i++) {
+    playTone(t + i * 0.09, 360 + i * 40, 0.14, "triangle", 0.07, 620 + i * 30);
+  }
+}
+
+/** 输送天意：上行的三声 */
+function sfxHeaven() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 784, 0.16, "sine", 0.09);
+  playTone(t + 0.07, 988, 0.18, "sine", 0.08);
+  playTone(t + 0.14, 1318, 0.26, "sine", 0.07);
+}
+
+/** 加仓：两声轻响 */
+function sfxAdd() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 880, 0.08, "sine", 0.08);
+  playTone(t + 0.06, 1174, 0.14, "sine", 0.07);
+}
+
 function syncMusicButton() {
   const btn = document.getElementById("btn-music");
-  btn.textContent = musicOn ? "音乐开" : "音乐关";
+  btn.textContent = musicOn ? "声音开" : "声音关";
   btn.classList.toggle("ghost", !musicOn);
   btn.setAttribute("aria-pressed", musicOn ? "true" : "false");
 }
