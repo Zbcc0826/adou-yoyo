@@ -1779,12 +1779,21 @@ function quoteLayout() {
   const costW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "成本") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "888.88"));
   const holdW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "持仓") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "99999"));
   const cashW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "现金") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "-888.88万"));
-  const midW = Math.max(costW, cashW) + 14 + holdW;
-  const pnlW = Math.ceil(Math.max(textWidth(`12px ${HUD_FONT}`, "总盈亏"), textWidth(`bold 18px ${HUD_FONT}`, "+888.88%")) + 8);
+  // 成本和现金共用更宽的那一格，数字右边缘才对齐
+  const pairW = Math.max(costW, cashW);
+  const midW = pairW + 14 + holdW;
+  const pnlAmountW = Math.max(
+    textWidth(`bold 13px ${HUD_FONT}`, "+88888.88"),
+    textWidth(`bold 13px ${HUD_FONT}`, "-888.88万")
+  );
+  const pnlW = Math.ceil(Math.max(
+    textWidth(`12px ${HUD_FONT}`, "总盈亏") + 8 + pnlAmountW,
+    textWidth(`bold 18px ${HUD_FONT}`, "+888.88%")
+  ) + 4);
   const levW = Math.ceil(Math.max(textWidth(`12px ${HUD_FONT}`, "杠杆"), textWidth(`bold 18px ${HUD_FONT}`, "≥200%")) + 8);
   const gap = 14;
   const natural = 12 + identW + gap + midW + gap + pnlW + gap + levW + 12;
-  return { identW, priceW, chgW, costW, holdW, cashW, midW, pnlW, levW, gap, natural, h: 68 };
+  return { identW, priceW, chgW, costW, holdW, cashW, pairW, midW, pnlW, levW, gap, natural, h: 68 };
 }
 
 /** 行情牌宽度只跟窗口走。数字变长只在格子里右对齐，牌子和格子都不跳 */
@@ -1867,17 +1876,37 @@ function drawQuote(box, price) {
   ctx.textAlign = "left";
   const field = 13 * scale;
   const costX = x + (lay.identW + lay.gap) * scale;
-  const holdX = costX + (lay.costW + 14) * scale;
+  const holdX = costX + (lay.pairW + 14) * scale;
   const cashColor = cash < 0 ? "#ff9f6b" : "#d7e0ea";
-  drawPinned(costX, y1, lay.costW * scale, "成本", avgCost.toFixed(2), "rgba(215,224,234,0.92)", field);
+  const pairSlot = lay.pairW * scale;
+  drawPinned(costX, y1, pairSlot, "成本", avgCost.toFixed(2), "rgba(215,224,234,0.92)", field);
   drawPinned(holdX, y1, lay.holdW * scale, "持仓", String(shares), "#d7e0ea", field);
-  drawPinned(costX, y2, lay.cashW * scale, "现金", moneyText(cash), cashColor, field);
+  drawPinned(costX, y2, pairSlot, "现金", moneyText(cash), cashColor, field);
   const lev = leverageOf(price);
   const levColor = !(cash < 0) ? "#d7e0ea" : (!Number.isFinite(lev) || lev >= 1.6 ? "#ff4d4f" : "#ffd27a");
   const levCx = box.x + box.w - 12 - (lay.levW * scale) / 2;
-  const pnlCx = levCx - (lay.levW * scale) / 2 - lay.gap * scale - (lay.pnlW * scale) / 2;
-  drawTallStat(pnlCx, box, "总盈亏", `${psign}${(pnlPct * 100).toFixed(2)}%`, pnlColor, scale);
+  const pnlLeft = levCx - (lay.levW * scale) / 2 - lay.gap * scale - lay.pnlW * scale;
+  const pnl = (price - avgCost) * shares;
+  const pnlAmount = Math.abs(pnl) >= 10000
+    ? (pnl > 0 ? "+" : "") + moneyText(pnl)
+    : (pnl > 0 ? "+" : "") + pnl.toFixed(2);
+  drawPnlStat(pnlLeft, lay.pnlW * scale, box, pnlAmount, `${psign}${(pnlPct * 100).toFixed(2)}%`, pnlColor, scale);
   drawTallStat(levCx, box, "杠杆", leverageText(price), levColor, scale);
+}
+
+/** 总盈亏：上面一行是金额，下面一行是大号百分比 */
+function drawPnlStat(x, colW, box, amount, pct, color, scale) {
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = color;
+  ctx.textAlign = "left";
+  ctx.font = `${12 * scale}px ${HUD_FONT}`;
+  ctx.fillText("总盈亏", x, box.y + 20);
+  ctx.textAlign = "right";
+  ctx.font = `bold ${13 * scale}px ${HUD_FONT}`;
+  ctx.fillText(amount, x + colW, box.y + 20);
+  ctx.textAlign = "center";
+  ctx.font = `bold ${18 * scale}px ${HUD_FONT}`;
+  ctx.fillText(pct, x + colW / 2, box.y + 46);
 }
 
 /** 底部按钮旁的次数。文字没变就不改 DOM */
