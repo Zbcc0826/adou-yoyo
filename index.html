@@ -1765,14 +1765,16 @@ function helpSize() {
   const keyW = Math.max(...HELP_LINES.map((line) => ctx.measureText(line[0]).width));
   const nameW = Math.max(...HELP_LINES.map((line) => ctx.measureText(line[1]).width));
   let w = 14 + nameW + 14 + keyW + 14;
+  // 展开才给说明和底下的喇叭、音量留位置。收起后卡片缩回去，别挡右侧 K 线
+  let h = 90;
   if (!helpCollapsed) {
     ctx.font = `12px ${HUD_FONT}`;
     const descW = Math.max(...HELP_LINES.map((line) => ctx.measureText(line[2]).width));
     w += descW + 14;
+    w = Math.max(w, 156);
+    h = 128;
   }
-  // 底下要放下喇叭和音量条，收起时也不能比这一排更窄
-  w = Math.max(w, 156);
-  return { w: Math.min(Math.ceil(w), W - 28), h: 128, keyW, nameW };
+  return { w: Math.min(Math.ceil(w), W - 28), h, keyW, nameW };
 }
 
 /** 量一段固定文案的宽度，用来给格子留死位，不跟当前数字变 */
@@ -1959,9 +1961,14 @@ function drawCountStrip(box) {
   drawPinned(box.x + 12, box.y + 38, slot, "阿斗摔倒", `${slamCount} 次`, "#d7e0ea", 13);
 }
 
-/** 喇叭和音量贴着快捷键卡的右下角 */
+/** 喇叭和音量贴着快捷键卡的右下角。说明收起时这一排也藏起来 */
 function placeSoundbar(help) {
   const bar = document.getElementById("soundbar");
+  if (helpCollapsed) {
+    bar.style.display = "none";
+    return;
+  }
+  bar.style.display = "flex";
   const w = bar.offsetWidth || 140;
   bar.style.left = Math.max(8, help.x + help.w - w - 10) + "px";
   bar.style.top = (help.y + help.h - 38) + "px";
@@ -1977,7 +1984,7 @@ function drawHud(now) {
   placeSoundbar(lay.help);
 }
 
-/** 操作说明。点一下收起说明，只留右侧的名称和快捷键 */
+/** 操作说明。点一下收起说明、喇叭和音量，只留右侧的名称和快捷键 */
 function drawHelp(box) {
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(8, 12, 20, 0.94)";
