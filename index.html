@@ -1758,71 +1758,37 @@ function helpSize() {
   return { w: Math.min(Math.ceil(w), W - 28), h: 90, keyW, nameW };
 }
 
-/** 行情牌两行。杠杆不在这里，单独画在右边 */
-function quoteLines(price) {
-  const prev = forming ? forming.prev : lastClose;
-  const ret = prev ? (price - prev) / prev : 0;
-  const pnl = (price - avgCost) * shares;
-  const pnlPct = avgCost > 0 ? (price - avgCost) / avgCost : 0;
-  const profit = pnl >= 0;
-  const sign = pnl > 0 ? "+" : "";
-  const rsign = ret > 0 ? "+" : "";
-  const pxColor = ret >= 0 ? "#ff4d4f" : "#14c38e";
-  const pnlBody = Math.abs(pnl) >= 10000 ? moneyText(Math.abs(pnl)) : Math.abs(pnl).toFixed(2);
-  const pnlText = `总盈亏 ${sign}${pnlBody}  ${sign}${(pnlPct * 100).toFixed(2)}%`;
-  return [
-    [
-      { text: "蜀汉集团  002263", color: "#d7e0ea", size: 13, bold: false },
-      { text: `成本 ${avgCost.toFixed(2)}`, color: "rgba(215,224,234,0.92)", size: 13, bold: false },
-      { text: pnlText, color: profit ? "#ff4d4f" : "#14c38e", size: 13, bold: true }
-    ],
-    [
-      { text: price.toFixed(2), color: pxColor, size: 16, bold: true },
-      { text: `${rsign}${(ret * 100).toFixed(2)}%`, color: pxColor, size: 14, bold: true },
-      { text: `持仓 ${shares}`, color: "#d7e0ea", size: 13, bold: false },
-      { text: `现金 ${moneyText(cash)}`, color: cash < 0 ? "#ff9f6b" : "#d7e0ea", size: 13, bold: true }
-    ]
-  ];
+/** 量一段固定文案的宽度，用来给格子留死位，不跟当前数字变 */
+function textWidth(font, text) {
+  ctx.font = font;
+  return ctx.measureText(text).width;
 }
 
-/** 杠杆列按最宽的写法留空，0% 和 ≥200% 来回换时列宽不变 */
-function leverageColumnWidth() {
-  ctx.font = `12px ${HUD_FONT}`;
-  const label = ctx.measureText("杠杆").width;
-  ctx.font = `bold 16px ${HUD_FONT}`;
-  let value = 0;
-  for (const sample of ["0%", "100%", "≥200%"]) {
-    value = Math.max(value, ctx.measureText(sample).width);
-  }
-  return Math.ceil(Math.max(label, value) + 8);
+/**
+ * 行情牌的格子。成本、持仓、现金按最宽写法留位。
+ * 总盈亏百分比和杠杆各占一列、两行，字号比旁边大。
+ */
+function quoteLayout() {
+  const nameW = textWidth(`13px ${HUD_FONT}`, "蜀汉集团  002263");
+  const priceW = textWidth(`bold 16px ${HUD_FONT}`, "888.88");
+  const chgW = textWidth(`bold 14px ${HUD_FONT}`, "+88.88%");
+  const identW = Math.max(nameW, priceW + 10 + chgW);
+  const costW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "成本") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "888.88"));
+  const holdW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "持仓") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "99999"));
+  const cashW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "现金") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "-888.88万"));
+  const midW = Math.max(costW, cashW) + 14 + holdW;
+  const pnlW = Math.ceil(Math.max(textWidth(`12px ${HUD_FONT}`, "总盈亏"), textWidth(`bold 18px ${HUD_FONT}`, "+888.88%")) + 8);
+  const levW = Math.ceil(Math.max(textWidth(`12px ${HUD_FONT}`, "杠杆"), textWidth(`bold 18px ${HUD_FONT}`, "≥200%")) + 8);
+  const gap = 14;
+  const natural = 12 + identW + gap + midW + gap + pnlW + gap + levW + 12;
+  return { identW, priceW, costW, holdW, cashW, midW, pnlW, levW, gap, natural, h: 68 };
 }
 
-/** 一整行字的宽度，scale 把字号按比例缩小 */
-function measureParts(parts, scale) {
-  let width = 0;
-  parts.forEach((part, i) => {
-    const size = Math.max(10, Math.round(part.size * scale));
-    ctx.font = `${part.bold ? "bold " : ""}${size}px ${HUD_FONT}`;
-    width += ctx.measureText(part.text).width;
-    if (i < parts.length - 1) width += 16;
-  });
-  return width;
-}
-
-/** 把字号缩小到这一行放得进 inner。缩不到 minScale 以下 */
-function fitScale(parts, inner, minScale) {
-  let scale = 1;
-  while (scale > minScale && measureParts(parts, scale) > inner) {
-    scale = Math.round((scale - 0.04) * 100) / 100;
-  }
-  return scale;
-}
-
-/** 行情牌宽度只跟窗口走。数字变长只缩小字号，牌子本身不跟着跳 */
+/** 行情牌宽度只跟窗口走。数字变长只在格子里右对齐，牌子和格子都不跳 */
 function quoteSize() {
-  const levW = leverageColumnWidth();
-  const w = Math.min(520, W - 28);
-  return { w: Math.max(220, w), h: 64, levW };
+  const layout = quoteLayout();
+  const w = Math.min(560, W - 28);
+  return { w: Math.max(220, w), h: layout.h, levW: layout.levW };
 }
 
 /**
@@ -1842,40 +1808,71 @@ function layoutHud() {
   return { quote, help: helpPos };
 }
 
-function drawPartRow(parts, x, y, scale) {
-  ctx.textAlign = "left";
+/** 格子里标签靠左、数字靠右，短数字也不会把后面的格子顶开 */
+function drawPinned(x, y, slotW, label, value, valueColor, size) {
   ctx.textBaseline = "middle";
-  let cursor = x;
-  parts.forEach((part, i) => {
-    const size = Math.max(10, Math.round(part.size * scale));
-    ctx.font = `${part.bold ? "bold " : ""}${size}px ${HUD_FONT}`;
-    ctx.fillStyle = part.color;
-    ctx.fillText(part.text, cursor, y);
-    cursor += ctx.measureText(part.text).width;
-    if (i < parts.length - 1) cursor += 16;
-  });
+  ctx.textAlign = "left";
+  ctx.font = `${size}px ${HUD_FONT}`;
+  ctx.fillStyle = "rgba(215,224,234,0.78)";
+  ctx.fillText(label, x, y);
+  ctx.textAlign = "right";
+  ctx.font = `bold ${size}px ${HUD_FONT}`;
+  ctx.fillStyle = valueColor;
+  ctx.fillText(value, x + slotW, y);
 }
 
-/** 行情牌。左两行是公司和持仓，右边一列杠杆占满两行 */
+/** 右边这种两行大字：上面是小标题，下面是大数字 */
+function drawTallStat(cx, box, label, value, color, scale) {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = color;
+  ctx.font = `${12 * scale}px ${HUD_FONT}`;
+  ctx.fillText(label, cx, box.y + 20);
+  ctx.font = `bold ${18 * scale}px ${HUD_FONT}`;
+  ctx.fillText(value, cx, box.y + 46);
+}
+
+/** 行情牌。成本、持仓、现金钉在格子里；总盈亏百分比和杠杆各占右边两行 */
 function drawQuote(box, price) {
+  const lay = quoteLayout();
+  const scale = Math.min(1, (box.w - 24) / (lay.natural - 24));
   ctx.fillStyle = "rgba(8, 12, 20, 0.94)";
   roundRect(box.x, box.y, box.w, box.h, 10);
   ctx.fill();
-  const textRight = box.x + box.w - 12 - box.levW;
-  const inner = Math.max(40, textRight - (box.x + 12));
-  const lines = quoteLines(price);
-  drawPartRow(lines[0], box.x + 12, box.y + 18, fitScale(lines[0], inner, 0.62));
-  drawPartRow(lines[1], box.x + 12, box.y + 46, fitScale(lines[1], inner, 0.62));
+  const prev = forming ? forming.prev : lastClose;
+  const ret = prev ? (price - prev) / prev : 0;
+  const pnlPct = avgCost > 0 ? (price - avgCost) / avgCost : 0;
+  const profit = pnlPct >= 0;
+  const pxColor = ret >= 0 ? "#ff4d4f" : "#14c38e";
+  const pnlColor = profit ? "#ff4d4f" : "#14c38e";
+  const rsign = ret > 0 ? "+" : "";
+  const psign = pnlPct > 0 ? "+" : "";
+  const y1 = box.y + 20;
+  const y2 = box.y + 46;
+  let x = box.x + 12;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#d7e0ea";
+  ctx.font = `${13 * scale}px ${HUD_FONT}`;
+  ctx.fillText("蜀汉集团  002263", x, y1);
+  ctx.fillStyle = pxColor;
+  ctx.font = `bold ${16 * scale}px ${HUD_FONT}`;
+  ctx.fillText(price.toFixed(2), x, y2);
+  ctx.font = `bold ${14 * scale}px ${HUD_FONT}`;
+  ctx.fillText(`${rsign}${(ret * 100).toFixed(2)}%`, x + (lay.priceW + 10) * scale, y2);
+  const field = 13 * scale;
+  const costX = x + (lay.identW + lay.gap) * scale;
+  const holdX = costX + (lay.costW + 14) * scale;
+  const cashColor = cash < 0 ? "#ff9f6b" : "#d7e0ea";
+  drawPinned(costX, y1, lay.costW * scale, "成本", avgCost.toFixed(2), "rgba(215,224,234,0.92)", field);
+  drawPinned(holdX, y1, lay.holdW * scale, "持仓", String(shares), "#d7e0ea", field);
+  drawPinned(costX, y2, lay.cashW * scale, "现金", moneyText(cash), cashColor, field);
   const lev = leverageOf(price);
   const levColor = !(cash < 0) ? "#d7e0ea" : (!Number.isFinite(lev) || lev >= 1.6 ? "#ff4d4f" : "#ffd27a");
-  const cx = box.x + box.w - 12 - box.levW / 2;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = levColor;
-  ctx.font = `12px ${HUD_FONT}`;
-  ctx.fillText("杠杆", cx, box.y + 22);
-  ctx.font = `bold 16px ${HUD_FONT}`;
-  ctx.fillText(leverageText(price), cx, box.y + 44);
+  const levCx = box.x + box.w - 12 - (lay.levW * scale) / 2;
+  const pnlCx = levCx - (lay.levW * scale) / 2 - lay.gap * scale - (lay.pnlW * scale) / 2;
+  drawTallStat(pnlCx, box, "总盈亏", `${psign}${(pnlPct * 100).toFixed(2)}%`, pnlColor, scale);
+  drawTallStat(levCx, box, "杠杆", leverageText(price), levColor, scale);
 }
 
 /** 底部按钮旁的次数。文字没变就不改 DOM */
