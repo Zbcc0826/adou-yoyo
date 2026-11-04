@@ -58,6 +58,55 @@
     font: 13px "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   }
   #dock input[type="range"] { width: 108px; }
+  /* 强平结算。盖住画面和底栏，横屏矮、竖屏窄都能滚完再点下一把 */
+  #settle {
+    position: fixed;
+    inset: 0;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 12px;
+    background: rgba(4, 8, 14, 0.78);
+  }
+  #settle[hidden] { display: none !important; }
+  #settle .card {
+    width: min(460px, 100%);
+    max-height: 100%;
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 18px 18px 16px;
+    border-radius: 16px;
+    background: #101826;
+    color: #f4efe4;
+    border: 1px solid rgba(255, 231, 163, 0.45);
+    font: 15px/1.55 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  #settle h2 {
+    margin: 0 0 10px;
+    font-size: 22px;
+    letter-spacing: 0.08em;
+    color: #ffd27a;
+  }
+  #settle p { margin: 0 0 8px; }
+  #settle .events { color: #d7e0ea; word-break: break-word; }
+  #settle button {
+    margin-top: 12px;
+    min-height: 44px;
+    width: 100%;
+    border: 0;
+    border-radius: 999px;
+    background: #ffe7a3;
+    color: #1a1204;
+    font: 600 16px/1 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  @media (max-height: 520px) {
+    #settle { align-items: flex-start; padding-top: 8px; }
+    #settle .card { padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+    #settle h2 { font-size: 18px; margin-bottom: 6px; }
+    #settle button { margin-top: 8px; min-height: 40px; }
+  }
 </style>
 </head>
 <body>
@@ -65,8 +114,16 @@
 <div id="dock">
   <button type="button" id="btn-heaven">输送天意</button>
   <button type="button" id="btn-add">加仓</button>
+  <button type="button" id="btn-sell">卖出</button>
   <button type="button" id="btn-music" class="ghost">声音关</button>
   <label class="vol">音量 <input id="vol" type="range" min="0" max="100" value="40"></label>
+</div>
+<div id="settle" hidden>
+  <div class="card">
+    <h2>强平</h2>
+    <div id="settle-body"></div>
+    <button type="button" id="btn-next">下一把</button>
+  </div>
 </div>
 <script>
 "use strict";
@@ -124,9 +181,16 @@ let taleBoost = 0;
 /** 正在飞的大喇叭，和 K 线无关 */
 let flyingHorns = [];
 
-/** 底仓和每次加仓的股数。加仓按现价成交，用来把成本往现价摊 */
+/** 底仓、每次买卖的股数，以及开局现金。加仓按现价成交，现金不够就记成负债 */
 const BASE_SHARES = 1000;
 const ADD_SHARES = 200;
+const SELL_SHARES = 200;
+const START_CASH = 100000;
+/** 现金为负时，每 10 根已收盘的 K 线扣一次利息。利率 = (杠杆率 - 1) × 2% */
+const INTEREST_EVERY = 10;
+const INTEREST_SLOPE = 0.02;
+/** 杠杆率达到 2 就是 200%，立刻强平 */
+const LIQUIDATION_LEV = 2;
 /** 每次输送天意，下根上涨概率增加的幅度，以及封顶 */
 const HEAVEN_STEP = 0.07;
 const HEAVEN_CAP = 0.62;
@@ -134,9 +198,17 @@ const HEAVEN_CAP = 0.62;
 const LIMIT_DOWN_P = 0.035;
 const LIMIT_DOWN_RET = -0.1;
 
-/** 持仓、成本、天意。天意只作用在下一根还没生成的 K 线上 */
+/** 持仓、现金、成本、天意。天意只作用在下一根还没生成的 K 线上 */
 let shares = 0;
+let cash = START_CASH;
 let avgCost = 0;
+/** 这一把开局时的净资产，用来算结算盈亏比 */
+let initialEquity = 0;
+/** 这一把已经收盘的 K 线根数，专供利息计数，不含开局预填的历史 */
+let closedBars = 0;
+/** 这一把遇到过的三国事件名，按第一次出现的顺序，不重复记 */
+let seenTales = [];
+let liquidated = false;
 let heavenCount = 0;
 let heavenBoost = 0;
 let heavenLimitDown = false;
@@ -452,6 +524,7 @@ function pushTale(tale) {
 
 /** 三国事件的字幕。样式接近天意播报，多一行事件名。停留 3 秒 */
 function showTale(title, line) {
+  if (title && !seenTales.includes(title)) seenTales.push(title);
   const spot = announceAt(0, -56, true);
   floaters.push({
     banner: true,
@@ -713,14 +786,24 @@ function bootstrapMarket(now) {
   }
   lastClose = price;
   shares = BASE_SHARES;
+  cash = START_CASH;
   avgCost = price;
+  initialEquity = cash + shares * price;
+  closedBars = 0;
+  seenTales = [];
+  liquidated = false;
+  heavenCount = 0;
+  slamCount = 0;
+  heavenBoost = 0;
+  taleBoost = 0;
+  heavenLimitDown = false;
   forming = makeCandle(price, true);
   formStart = now;
 }
 
 /** 收盘并接上下一根。历史数组只保留屏幕装得下的量 */
 function rollCandle(now) {
-  if (!forming) return;
+  if (!forming || liquidated) return;
   const done = forming;
   done.live = done.c;
   done.seenH = done.h;
@@ -728,8 +811,11 @@ function rollCandle(now) {
   candles.push(done);
   if (candles.length > 240) candles.splice(0, candles.length - 240);
   lastClose = done.c;
+  closedBars += 1;
+  if (closedBars % INTEREST_EVERY === 0) chargeInterest(done.c);
   forming = makeCandle(done.c, true);
   formStart = now;
+  maybeLiquidate(done.c);
 }
 
 /** 手的位置。每轮开始时手腕向下抖一下，像把溜溜球甩出去 */
@@ -863,13 +949,31 @@ function beginSplat() {
   });
 }
 
-/** 播报位置。手机上顶栏和说明卡会挡住画面上沿，所以落在卡片下面 */
+/** 播报位置。落在持仓卡和说明卡下面，横屏并排时只避开更高的那一张 */
 function announceAt(dx, dy, banner) {
-  // 事件字幕是一块两行卡片，还要往上飘一会儿，手机上要留出说明卡的高度
-  const clearTop = W >= 980 ? 200 : banner ? 318 : 268;
+  const occupied = Math.max(accountBox().y + accountBox().h, helpBox().y + helpBox().h);
+  const clearTop = occupied + (banner ? 36 : 20);
   const y = clamp(H * 0.5 + dy, clearTop, Math.max(clearTop, H - 120));
   const x = clamp(W * 0.5 + dx, 72, Math.max(72, W - 72));
   return { x, y };
+}
+
+/** 左上角持仓卡。窄屏拉满，宽屏限宽，给右边的说明卡留位置 */
+function accountBox() {
+  const w = W < 700 ? W - 28 : Math.min(440, Math.floor((W - 36) * 0.48));
+  return { x: 14, y: 66, w: Math.max(200, w), h: 122 };
+}
+
+/** 说明卡。宽屏跟持仓卡并排，窄屏或挤不下时排到持仓卡下面 */
+function helpBox() {
+  const h = 90;
+  const account = accountBox();
+  const stacked = { x: 14, y: account.y + account.h + 8, w: Math.min(460, W - 28), h };
+  if (W < 700) return stacked;
+  const w = Math.min(460, W - account.x - account.w - 8 - 14);
+  const x = W - w - 14;
+  if (w < 220 || x < account.x + account.w + 8) return stacked;
+  return { x, y: 12, w, h };
 }
 
 /** 在地上躺一会儿 */
@@ -916,6 +1020,7 @@ function spawnImpact(x) {
 
 /** 物理与行情推进 */
 function update(dt, now) {
+  if (liquidated) return;
   if (forming) {
     const prog = formProgress(now);
     const price = evalPath(forming.pts, forming.times, prog);
@@ -927,7 +1032,11 @@ function update(dt, now) {
       forming.slammed = true;
       triggerSlam((forming.c - forming.prev) / forming.prev);
     }
-    if (prog >= 1) rollCandle(now);
+    if (maybeLiquidate(price)) return;
+    if (prog >= 1) {
+      rollCandle(now);
+      if (liquidated) return;
+    }
   }
 
   const pose = yoyoTarget(now);
@@ -1673,56 +1782,106 @@ function drawHud(now) {
 function drawHelp() {
   const lines = [
     ["↑", "输送天意", "略微提高上涨和出事件的概率"],
-    ["空格", "加仓", "按现价买入 200 股，摊薄成本"]
+    ["空格", "加仓", "买入 200 股，现金可为负"],
+    ["", "卖出", "按现价卖出 200 股"]
   ];
+  const box = helpBox();
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  const boxW = Math.min(460, W - 28);
-  const boxH = 64;
-  const x = W >= 980 ? W - boxW - 14 : 14;
-  const y = W >= 980 ? 12 : 178;
   ctx.fillStyle = "rgba(8, 12, 20, 0.78)";
-  roundRect(x, y, boxW, boxH, 10);
+  roundRect(box.x, box.y, box.w, box.h, 10);
   ctx.fill();
   lines.forEach((line, i) => {
-    const ly = y + 20 + i * 26;
+    const ly = box.y + 20 + i * 26;
     ctx.fillStyle = "#ffe7a3";
     ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-    ctx.fillText(line[0], x + 14, ly);
-    ctx.fillText(line[1], x + 52, ly);
+    ctx.fillText(line[0], box.x + 14, ly);
+    ctx.fillText(line[1], box.x + 52, ly);
     ctx.fillStyle = "#d7e0ea";
     ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-    ctx.fillText(line[2], x + 118, ly);
+    const desc = line[2];
+    let size = 12;
+    ctx.font = `${size}px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`;
+    const maxW = box.w - 118 - 12;
+    while (size > 10 && ctx.measureText(desc).width > maxW) {
+      size -= 1;
+      ctx.font = `${size}px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`;
+    }
+    ctx.fillText(desc, box.x + 118, ly);
   });
 }
 
-/** 持仓盈亏、天意和摔倒次数。红为赚，绿为亏 */
+/** 金额缩成万，卡片里放得下 */
+function moneyText(n) {
+  const sign = n < 0 ? "-" : "";
+  const v = Math.abs(n);
+  if (v >= 10000) return `${sign}${(v / 10000).toFixed(2)}万`;
+  return `${sign}${v.toFixed(0)}`;
+}
+
+/** 净资产 = 现金 + 持仓市值。现金为负时市值大于净资产，杠杆率就会超过 100% */
+function equityOf(price) {
+  return cash + shares * price;
+}
+
+/** 杠杆率 = 持仓市值 / 净资产。没有正的净资产时视为已经超过强平线 */
+function leverageOf(price) {
+  const mv = shares * price;
+  const equity = equityOf(price);
+  if (mv <= 0) return equity < 0 ? Infinity : 0;
+  if (equity <= 0) return Infinity;
+  return mv / equity;
+}
+
+function leverageText(price) {
+  const lev = leverageOf(price);
+  if (!Number.isFinite(lev)) return "≥200%";
+  return `${Math.round(lev * 100)}%`;
+}
+
+/** 持仓盈亏、现金和杠杆。红为赚，绿为亏；现金为负时杠杆用金色到红色 */
 function drawAccount(price) {
   const pnl = (price - avgCost) * shares;
   const pnlPct = avgCost > 0 ? (price - avgCost) / avgCost : 0;
   const profit = pnl >= 0;
   const sign = pnl > 0 ? "+" : "";
+  const box = accountBox();
+  const lev = leverageOf(price);
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
-  roundRect(14, 66, 300, 100, 10);
+  roundRect(box.x, box.y, box.w, box.h, 10);
   ctx.fill();
+  const left = box.x + 12;
   ctx.fillStyle = "#d7e0ea";
   ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  const boostText = heavenBoost > 0 ? `    +${Math.round(heavenBoost * 100)}%` : "";
-  ctx.fillText(`输送天意  ${heavenCount} 次${boostText}`, 26, 84);
-  ctx.fillText(`阿斗摔倒  ${slamCount} 次`, 26, 104);
+  const boostText = heavenBoost > 0 ? `  +${Math.round(heavenBoost * 100)}%` : "";
+  ctx.fillText(`输送天意  ${heavenCount} 次${boostText}`, left, box.y + 18);
+  ctx.fillText(`阿斗摔倒  ${slamCount} 次`, left, box.y + 40);
   ctx.fillStyle = "rgba(215,224,234,0.78)";
   ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  ctx.fillText(`成本 ${avgCost.toFixed(2)}    持仓 ${shares}`, 26, 124);
-  ctx.font = "bold 14px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  ctx.fillText(`成本 ${avgCost.toFixed(2)}    持仓 ${shares}`, left, box.y + 62);
+  ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
   ctx.fillStyle = profit ? "#ff4d4f" : "#14c38e";
-  ctx.fillText(`总盈亏  ${sign}${pnl.toFixed(2)}    ${sign}${(pnlPct * 100).toFixed(2)}%`, 26, 146);
+  const pnlText = `总盈亏 ${sign}${pnl.toFixed(2)}  ${sign}${(pnlPct * 100).toFixed(2)}%`;
+  const cashText = `现金 ${moneyText(cash)}`;
+  ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  const pnlW = ctx.measureText(pnlText).width;
+  const cashW = ctx.measureText(cashText).width;
+  const rowY = box.y + 84;
+  ctx.fillStyle = profit ? "#ff4d4f" : "#14c38e";
+  ctx.fillText(pnlText, left, rowY);
+  const cashBeside = pnlW + 14 + cashW <= box.w - 24;
+  ctx.fillStyle = cash < 0 ? "#ff9f6b" : "#d7e0ea";
+  ctx.fillText(cashText, cashBeside ? left + pnlW + 14 : left, cashBeside ? rowY : box.y + 104);
+  ctx.fillStyle = !Number.isFinite(lev) || lev >= 1.6 ? "#ff4d4f" : cash < 0 ? "#ffd27a" : "#d7e0ea";
+  const levLabel = `杠杆 ${leverageText(price)}`;
+  ctx.fillText(levLabel, cashBeside ? left : left + cashW + 14, box.y + 104);
 }
 
 /** 输送天意。键盘和底部按钮都走这里，按住不连发由调用方保证 */
 function sendHeaven() {
+  if (liquidated) return;
   heavenCount += 1;
   heavenBoost = Math.min(HEAVEN_CAP, heavenBoost + HEAVEN_STEP);
   taleBoost = Math.min(TALE_BOOST_CAP, taleBoost + TALE_BOOST_STEP);
@@ -1741,13 +1900,15 @@ function sendHeaven() {
   sfxHeaven();
 }
 
-/** 按现价加一笔仓，把成本往现价摊 */
+/** 按现价加一笔仓。现金可以为负，负了以后杠杆率按市值除以净资产算 */
 function addPosition() {
-  if (shares <= 0) return;
-  const px = forming ? forming.live : lastClose;
+  if (liquidated) return;
+  const px = livePrice();
   if (!(px > 0)) return;
-  avgCost = (avgCost * shares + px * ADD_SHARES) / (shares + ADD_SHARES);
+  if (shares <= 0) avgCost = px;
+  else avgCost = (avgCost * shares + px * ADD_SHARES) / (shares + ADD_SHARES);
   shares += ADD_SHARES;
+  cash -= px * ADD_SHARES;
   const addMsg = announceAt(0, 36);
   floaters.push({
     text: "加仓",
@@ -1760,6 +1921,101 @@ function addPosition() {
     color: "#ffd27a"
   });
   sfxAdd();
+  maybeLiquidate(px);
+}
+
+/** 按现价卖出 200 股。不够 200 就卖光 */
+function sellPosition() {
+  if (liquidated || shares <= 0) return;
+  const px = livePrice();
+  if (!(px > 0)) return;
+  const n = Math.min(SELL_SHARES, shares);
+  cash += px * n;
+  shares -= n;
+  if (shares <= 0) avgCost = 0;
+  const msg = announceAt(0, 36);
+  floaters.push({
+    text: "卖出",
+    x: msg.x,
+    y: msg.y,
+    vy: -10,
+    life: 0.9,
+    age: 0,
+    size: 30,
+    color: "#9fd0ff"
+  });
+  sfxSell();
+}
+
+/** 当前用来成交的价格。有正在走的 K 线就用它的现价 */
+function livePrice() {
+  return forming ? forming.live : lastClose;
+}
+
+/** 负债利息。杠杆越高，这一次扣得越多 */
+function chargeInterest(price) {
+  if (!(cash < 0)) return;
+  const lev = leverageOf(price);
+  const rate = (Number.isFinite(lev) ? Math.max(0, lev - 1) : 1) * INTEREST_SLOPE;
+  const interest = (-cash) * rate;
+  if (!(interest > 0)) return;
+  cash -= interest;
+  const spot = announceAt(0, 56);
+  floaters.push({
+    text: `利息 -${moneyText(interest)}`,
+    x: spot.x,
+    y: spot.y,
+    vy: -8,
+    life: 1.2,
+    age: 0,
+    size: 26,
+    color: "#ff9f6b"
+  });
+}
+
+/** 杠杆到 200% 就停盘，弹出这一把的结算 */
+function maybeLiquidate(price) {
+  if (liquidated) return true;
+  if (leverageOf(price) < LIQUIDATION_LEV) return false;
+  liquidated = true;
+  const equity = equityOf(price);
+  const pnl = equity - initialEquity;
+  const ratio = initialEquity > 0 ? pnl / initialEquity : 0;
+  const sign = pnl > 0 ? "+" : "";
+  const body = document.getElementById("settle-body");
+  body.replaceChildren();
+  const rows = [
+    `注入天意  ${heavenCount} 次`,
+    `盈亏比  ${sign}${(ratio * 100).toFixed(2)}%（${sign}${pnl.toFixed(2)}）`,
+    `阿斗摔倒  ${slamCount} 次`,
+    `遇到的事件  ${seenTales.length ? seenTales.join("、") : "无"}`
+  ];
+  for (const text of rows) {
+    const p = document.createElement("p");
+    p.textContent = text;
+    if (text.startsWith("遇到的事件")) p.className = "events";
+    body.appendChild(p);
+  }
+  document.getElementById("settle").hidden = false;
+  return true;
+}
+
+/** 结算后开一把新的。不保留上一把的持仓、天意和事件 */
+function nextRound() {
+  document.getElementById("settle").hidden = true;
+  liquidated = false;
+  state = "yoyo";
+  stateT = 0;
+  pendingSlam = false;
+  floaters = [];
+  const now = performance.now();
+  bootstrapMarket(now);
+  const pose = yoyoTarget(now);
+  aduX = pose.x;
+  aduY = pose.y;
+  aduRot = pose.rot;
+  aduSx = pose.sx;
+  aduSy = pose.sy;
 }
 
 /**
@@ -2217,6 +2473,14 @@ function sfxAdd() {
   playTone(t + 0.06, 1174, 0.14, "sine", 0.07);
 }
 
+/** 卖出：两声下行 */
+function sfxSell() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 660, 0.08, "sine", 0.07);
+  playTone(t + 0.06, 440, 0.14, "sine", 0.06);
+}
+
 function syncMusicButton() {
   const btn = document.getElementById("btn-music");
   btn.textContent = musicOn ? "声音开" : "声音关";
@@ -2227,6 +2491,7 @@ function syncMusicButton() {
 /** 上方向键输送天意，空格按现价小幅加仓。按住不连发 */
 function onKeyDown(e) {
   if (e.repeat) return;
+  if (liquidated) return;
   if (e.key === "ArrowUp") {
     e.preventDefault();
     sendHeaven();
@@ -2294,6 +2559,8 @@ function frame(now) {
 
 document.getElementById("btn-heaven").addEventListener("click", sendHeaven);
 document.getElementById("btn-add").addEventListener("click", addPosition);
+document.getElementById("btn-sell").addEventListener("click", sellPosition);
+document.getElementById("btn-next").addEventListener("click", nextRound);
 document.getElementById("btn-music").addEventListener("click", () => {
   musicOn = !musicOn;
   syncMusicButton();
