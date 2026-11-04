@@ -1749,15 +1749,6 @@ function drawHud(now) {
   const prev = forming ? forming.prev : lastClose;
   const ret = (price - prev) / prev;
   const up = ret >= 0;
-  const names = {
-    yoyo: "甩",
-    windup: "被提起来",
-    fall: "下坠",
-    splat: "拍在地上",
-    dazed: "眼冒金星",
-    reel: "拉回来"
-  };
-  const label = names[state] || "";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
@@ -1771,14 +1762,7 @@ function drawHud(now) {
   const sign = ret > 0 ? "+" : "";
   ctx.fillText(`${price.toFixed(2)}   ${sign}${(ret * 100).toFixed(2)}%`, 26, 46);
 
-  ctx.font = "13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-  const tw = ctx.measureText(label).width;
-  ctx.fillStyle = "rgba(8, 12, 20, 0.72)";
-  roundRect(252, 12, tw + 24, 28, 8);
-  ctx.fill();
-  ctx.fillStyle = "#ffe7a3";
-  ctx.fillText(label, 264, 26);
-
+  // 甩、被提起来这些状态不画字，也不画旁边那块框
   drawAccount(price);
   drawHelp();
 }
