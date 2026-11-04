@@ -1767,7 +1767,7 @@ function drawHud(now) {
   drawHelp();
 }
 
-/** 操作说明。不展示行情阶段 */
+/** 操作说明。从右往左是快捷键、名称、说明，三列都贴着右边对齐 */
 function drawHelp() {
   const lines = [
     ["↑", "输送天意", "略微提高上涨和出事件的概率"],
@@ -1775,28 +1775,34 @@ function drawHelp() {
     ["S", "卖出", "按现价卖出 200 股"]
   ];
   const box = helpBox();
-  ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(8, 12, 20, 0.78)";
   roundRect(box.x, box.y, box.w, box.h, 10);
   ctx.fill();
+  ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
+  const keyW = Math.max(...lines.map((line) => ctx.measureText(line[0]).width));
+  const nameW = Math.max(...lines.map((line) => ctx.measureText(line[1]).width));
+  const gap = 14;
+  const right = box.x + box.w - 14;
+  const nameX = right - keyW - gap;
+  const descX = nameX - nameW - gap;
+  const maxDesc = Math.max(40, descX - (box.x + 12));
+  ctx.textAlign = "right";
   lines.forEach((line, i) => {
     const ly = box.y + 20 + i * 26;
     ctx.fillStyle = "#ffe7a3";
     ctx.font = "bold 13px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
-    ctx.fillText(line[0], box.x + 14, ly);
-    ctx.fillText(line[1], box.x + 52, ly);
+    ctx.fillText(line[0], right, ly);
+    ctx.fillText(line[1], nameX, ly);
     ctx.fillStyle = "#d7e0ea";
-    ctx.font = "12px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif";
     const desc = line[2];
     let size = 12;
     ctx.font = `${size}px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`;
-    const maxW = box.w - 118 - 12;
-    while (size > 10 && ctx.measureText(desc).width > maxW) {
+    while (size > 10 && ctx.measureText(desc).width > maxDesc) {
       size -= 1;
       ctx.font = `${size}px PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif`;
     }
-    ctx.fillText(desc, box.x + 118, ly);
+    ctx.fillText(desc, descX, ly);
   });
 }
 
