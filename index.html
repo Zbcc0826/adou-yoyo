@@ -13,6 +13,7 @@
     user-select: none;
   }
   body {
+    position: relative;
     display: flex;
     flex-direction: column;
   }
@@ -50,20 +51,30 @@
     background: transparent;
     box-shadow: inset 0 0 0 1px rgba(255, 231, 163, 0.45);
   }
-  #dock .stat {
-    color: #d7e0ea;
-    font: 13px/1.2 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    white-space: nowrap;
-    padding: 0 2px;
-  }
-  #dock .vol {
+  /* 喇叭和音量贴在快捷键卡右下角，不跟底部三个按钮挤在一起 */
+  #soundbar {
+    position: absolute;
+    z-index: 3;
     display: flex;
     align-items: center;
-    gap: 6px;
-    color: #d7e0ea;
-    font: 13px "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    gap: 8px;
   }
-  #dock input[type="range"] { width: 108px; }
+  #soundbar button {
+    appearance: none;
+    width: 36px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid rgba(255, 231, 163, 0.85);
+    border-radius: 999px;
+    background: transparent;
+    font-size: 16px;
+    line-height: 30px;
+  }
+  #soundbar button:not(.off) {
+    background: #ffe7a3;
+    border-color: #ffe7a3;
+  }
+  #soundbar input[type="range"] { width: 92px; }
   /* 强平结算。盖住画面和底栏，横屏矮、竖屏窄都能滚完再点下一把 */
   #settle {
     position: fixed;
@@ -117,14 +128,14 @@
 </head>
 <body>
 <canvas id="stage"></canvas>
+<div id="soundbar">
+  <button type="button" id="btn-music" class="off" aria-label="声音">📢</button>
+  <input id="vol" type="range" min="0" max="100" value="40" aria-label="音量">
+</div>
 <div id="dock">
-  <span class="stat" id="stat-heaven">输送天意 0 次</span>
-  <span class="stat" id="stat-slam">阿斗摔倒 0 次</span>
-  <button type="button" id="btn-heaven">输送天意</button>
   <button type="button" id="btn-add">加仓</button>
   <button type="button" id="btn-sell">卖出</button>
-  <button type="button" id="btn-music" class="ghost">声音关</button>
-  <label class="vol">音量 <input id="vol" type="range" min="0" max="100" value="40"></label>
+  <button type="button" id="btn-heaven">输送天意</button>
 </div>
 <div id="settle" hidden>
   <div class="card">
@@ -967,7 +978,11 @@ function beginSplat() {
 /** 播报位置。落在行情牌和说明卡下面 */
 function announceAt(dx, dy, banner) {
   const lay = layoutHud();
-  const occupied = Math.max(lay.quote.y + lay.quote.h, lay.help.y + lay.help.h);
+  const occupied = Math.max(
+    lay.quote.y + lay.quote.h,
+    lay.help.y + lay.help.h,
+    lay.counts.y + lay.counts.h
+  );
   const clearTop = occupied + (banner ? 36 : 20);
   const y = clamp(H * 0.5 + dy, clearTop, Math.max(clearTop, H - 120));
   const x = clamp(W * 0.5 + dx, 72, Math.max(72, W - 72));
@@ -1755,7 +1770,9 @@ function helpSize() {
     const descW = Math.max(...HELP_LINES.map((line) => ctx.measureText(line[2]).width));
     w += descW + 14;
   }
-  return { w: Math.min(Math.ceil(w), W - 28), h: 90, keyW, nameW };
+  // 底下要放下喇叭和音量条，收起时也不能比这一排更窄
+  w = Math.max(w, 156);
+  return { w: Math.min(Math.ceil(w), W - 28), h: 128, keyW, nameW };
 }
 
 /** 量一段固定文案的宽度，用来给格子留死位，不跟当前数字变 */
@@ -1807,17 +1824,39 @@ function quoteSize() {
  * 行情牌在左上，说明卡在右上。两张并排放不下时，说明卡挪到行情牌下面靠右。
  * 次数已经到底部按钮旁，这里不再留次数卡。
  */
+/** 蜀汉集团下面的次数条。按「99 次 +62%」留宽，数字变化不改宽度 */
+function countStripSize() {
+  const labelW = Math.max(
+    textWidth(`13px ${HUD_FONT}`, "输送天意"),
+    textWidth(`13px ${HUD_FONT}`, "阿斗摔倒")
+  );
+  const valueW = Math.max(
+    textWidth(`bold 13px ${HUD_FONT}`, "999 次  +62%"),
+    textWidth(`bold 13px ${HUD_FONT}`, "999 次")
+  );
+  const slot = Math.ceil(labelW + 8 + valueW);
+  return { w: Math.min(slot + 24, W - 28), h: 56, slot };
+}
+
 function layoutHud() {
   const help = helpSize();
   const quoteNat = quoteSize();
+  const countsNat = countStripSize();
   const gap = 8;
   const top = 12;
   const quote = { x: 14, y: top, w: quoteNat.w, h: quoteNat.h, levW: quoteNat.levW };
+  const counts = {
+    x: quote.x,
+    y: quote.y + quote.h + gap,
+    w: Math.min(countsNat.w, quote.w),
+    h: countsNat.h,
+    slot: countsNat.slot
+  };
   const beside = 14 + quote.w + gap + help.w + 14 <= W;
   const helpPos = beside
     ? { x: W - help.w - 14, y: top, w: help.w, h: help.h }
-    : { x: Math.max(14, W - help.w - 14), y: top + quote.h + gap, w: help.w, h: help.h };
-  return { quote, help: helpPos };
+    : { x: Math.max(14, W - help.w - 14), y: counts.y + counts.h + gap, w: help.w, h: help.h };
+  return { quote, help: helpPos, counts };
 }
 
 /** 格子里标签靠左、数字靠右，短数字也不会把后面的格子顶开 */
@@ -1909,15 +1948,23 @@ function drawPnlStat(x, colW, box, amount, pct, color, scale) {
   ctx.fillText(pct, x + colW / 2, box.y + 46);
 }
 
-/** 底部按钮旁的次数。文字没变就不改 DOM */
-function drawDockStats() {
+/** 蜀汉集团正下方的两行次数。格子宽度固定，次数只在格子里右对齐 */
+function drawCountStrip(box) {
+  ctx.fillStyle = "rgba(8, 12, 20, 0.94)";
+  roundRect(box.x, box.y, box.w, box.h, 10);
+  ctx.fill();
   const boost = heavenBoost > 0 ? `  +${Math.round(heavenBoost * 100)}%` : "";
-  const heavenText = `输送天意 ${heavenCount} 次${boost}`;
-  const slamText = `阿斗摔倒 ${slamCount} 次`;
-  const heaven = document.getElementById("stat-heaven");
-  const slam = document.getElementById("stat-slam");
-  if (heaven.textContent !== heavenText) heaven.textContent = heavenText;
-  if (slam.textContent !== slamText) slam.textContent = slamText;
+  const slot = Math.min(box.slot, box.w - 24);
+  drawPinned(box.x + 12, box.y + 16, slot, "输送天意", `${heavenCount} 次${boost}`, "#ffe7a3", 13);
+  drawPinned(box.x + 12, box.y + 38, slot, "阿斗摔倒", `${slamCount} 次`, "#d7e0ea", 13);
+}
+
+/** 喇叭和音量贴着快捷键卡的右下角 */
+function placeSoundbar(help) {
+  const bar = document.getElementById("soundbar");
+  const w = bar.offsetWidth || 140;
+  bar.style.left = Math.max(8, help.x + help.w - w - 10) + "px";
+  bar.style.top = (help.y + help.h - 38) + "px";
 }
 
 /** 左上角行情牌和右上角说明。画在拳头之后，袖子从字后面穿过去 */
@@ -1925,8 +1972,9 @@ function drawHud(now) {
   const price = forming ? forming.live : lastClose;
   const lay = layoutHud();
   drawQuote(lay.quote, price);
+  drawCountStrip(lay.counts);
   drawHelp(lay.help);
-  drawDockStats();
+  placeSoundbar(lay.help);
 }
 
 /** 操作说明。点一下收起说明，只留右侧的名称和快捷键 */
@@ -2624,8 +2672,9 @@ function sfxLiquidate() {
 
 function syncMusicButton() {
   const btn = document.getElementById("btn-music");
-  btn.textContent = musicOn ? "声音开" : "声音关";
-  btn.classList.toggle("ghost", !musicOn);
+  btn.textContent = "📢";
+  btn.classList.toggle("off", !musicOn);
+  btn.setAttribute("aria-label", musicOn ? "声音开" : "声音关");
   btn.setAttribute("aria-pressed", musicOn ? "true" : "false");
 }
 
