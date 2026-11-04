@@ -204,6 +204,9 @@ let cash = START_CASH;
 let avgCost = 0;
 /** 这一把开局时的净资产，用来算结算盈亏比 */
 let initialEquity = 0;
+/** 这一把见过的最高净资产，以及对应的最高盈利比 */
+let peakEquity = 0;
+let peakRatio = 0;
 /** 这一把已经收盘的 K 线根数，专供利息计数，不含开局预填的历史 */
 let closedBars = 0;
 /** 这一把遇到过的三国事件名，按第一次出现的顺序，不重复记 */
@@ -789,6 +792,8 @@ function bootstrapMarket(now) {
   cash = START_CASH;
   avgCost = price;
   initialEquity = cash + shares * price;
+  peakEquity = initialEquity;
+  peakRatio = 0;
   closedBars = 0;
   seenTales = [];
   liquidated = false;
@@ -1783,7 +1788,7 @@ function drawHelp() {
   const lines = [
     ["↑", "输送天意", "略微提高上涨和出事件的概率"],
     ["空格", "加仓", "买入 200 股，现金可为负"],
-    ["", "卖出", "按现价卖出 200 股"]
+    ["S", "卖出", "按现价卖出 200 股"]
   ];
   const box = helpBox();
   ctx.textAlign = "left";
@@ -1920,7 +1925,9 @@ function addPosition() {
     size: 30,
     color: "#ffd27a"
   });
-  sfxAdd();
+  // 现金还是正的，只响加仓；买成负债就改响加杠杆
+  if (cash < 0) sfxLeverage();
+  else sfxAdd();
   maybeLiquidate(px);
 }
 
@@ -1973,20 +1980,33 @@ function chargeInterest(price) {
   });
 }
 
+/** 用现价刷新这一把的最高净资产和最高盈利比 */
+function notePeak(price) {
+  const equity = equityOf(price);
+  const ratio = initialEquity > 0 ? (equity - initialEquity) / initialEquity : 0;
+  if (equity > peakEquity) peakEquity = equity;
+  if (ratio > peakRatio) peakRatio = ratio;
+}
+
 /** 杠杆到 200% 就停盘，弹出这一把的结算 */
 function maybeLiquidate(price) {
   if (liquidated) return true;
+  notePeak(price);
   if (leverageOf(price) < LIQUIDATION_LEV) return false;
   liquidated = true;
+  sfxLiquidate();
   const equity = equityOf(price);
   const pnl = equity - initialEquity;
   const ratio = initialEquity > 0 ? pnl / initialEquity : 0;
   const sign = pnl > 0 ? "+" : "";
+  const peakSign = peakRatio > 0 ? "+" : "";
   const body = document.getElementById("settle-body");
   body.replaceChildren();
   const rows = [
     `注入天意  ${heavenCount} 次`,
     `盈亏比  ${sign}${(ratio * 100).toFixed(2)}%（${sign}${pnl.toFixed(2)}）`,
+    `最高盈利比  ${peakSign}${(peakRatio * 100).toFixed(2)}%`,
+    `最高净资产  ${moneyText(peakEquity)}`,
     `阿斗摔倒  ${slamCount} 次`,
     `遇到的事件  ${seenTales.length ? seenTales.join("、") : "无"}`
   ];
@@ -2473,12 +2493,30 @@ function sfxAdd() {
   playTone(t + 0.06, 1174, 0.14, "sine", 0.07);
 }
 
-/** 卖出：两声下行 */
+/** 卖出：三声下行，和加仓的上行分开 */
 function sfxSell() {
   if (!canPlaySfx()) return;
   const t = audioCtx.currentTime;
-  playTone(t, 660, 0.08, "sine", 0.07);
-  playTone(t + 0.06, 440, 0.14, "sine", 0.06);
+  playTone(t, 740, 0.09, "sine", 0.08);
+  playTone(t + 0.07, 554, 0.1, "sine", 0.07);
+  playTone(t + 0.14, 415, 0.16, "sine", 0.06);
+}
+
+/** 现金买成负数、杠杆垫上去时的低音警告 */
+function sfxLeverage() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 196, 0.18, "triangle", 0.1, 147);
+  playTone(t + 0.12, 294, 0.2, "sine", 0.06);
+}
+
+/** 强平结算：短促下落，比摔倒轻 */
+function sfxLiquidate() {
+  if (!canPlaySfx()) return;
+  const t = audioCtx.currentTime;
+  playTone(t, 523, 0.12, "sine", 0.09, 262);
+  playTone(t + 0.1, 330, 0.16, "triangle", 0.07, 165);
+  noiseThud(t + 0.12, 0.12, 0.08);
 }
 
 function syncMusicButton() {
@@ -2488,18 +2526,24 @@ function syncMusicButton() {
   btn.setAttribute("aria-pressed", musicOn ? "true" : "false");
 }
 
-/** 上方向键输送天意，空格按现价小幅加仓。按住不连发 */
+/** 上方向键输送天意，空格加仓，S 卖出。按住不连发 */
 function onKeyDown(e) {
-  if (e.repeat) return;
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   if (liquidated) return;
   if (e.key === "ArrowUp") {
     e.preventDefault();
     sendHeaven();
     return;
   }
-  if (e.key !== " ") return;
-  e.preventDefault();
-  addPosition();
+  if (e.key === " ") {
+    e.preventDefault();
+    addPosition();
+    return;
+  }
+  if (e.key === "s" || e.key === "S") {
+    e.preventDefault();
+    sellPosition();
+  }
 }
 
 /** 整帧 */
