@@ -203,7 +203,7 @@ const LIQUIDATION_LEV = 2;
 const HEAVEN_STEP = 0.07;
 const HEAVEN_CAP = 0.62;
 /** 每次输送天意时，下一根直接跌停的概率 */
-const LIMIT_DOWN_P = 0.035;
+const LIMIT_DOWN_P = 0.012;
 const LIMIT_DOWN_RET = -0.1;
 
 /** 持仓、现金、成本、天意。天意只作用在下一根还没生成的 K 线上 */
@@ -1771,7 +1771,10 @@ function textWidth(font, text) {
 function quoteLayout() {
   const nameW = textWidth(`13px ${HUD_FONT}`, "蜀汉集团  002263");
   const priceW = textWidth(`bold 16px ${HUD_FONT}`, "888.88");
-  const chgW = textWidth(`bold 14px ${HUD_FONT}`, "+88.88%");
+  const chgW = Math.max(
+    textWidth(`bold 14px ${HUD_FONT}`, "+88.88%"),
+    textWidth(`bold 14px ${HUD_FONT}`, "-88.88%")
+  );
   const identW = Math.max(nameW, priceW + 10 + chgW);
   const costW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "成本") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "888.88"));
   const holdW = Math.ceil(textWidth(`13px ${HUD_FONT}`, "持仓") + 6 + textWidth(`bold 13px ${HUD_FONT}`, "99999"));
@@ -1781,7 +1784,7 @@ function quoteLayout() {
   const levW = Math.ceil(Math.max(textWidth(`12px ${HUD_FONT}`, "杠杆"), textWidth(`bold 18px ${HUD_FONT}`, "≥200%")) + 8);
   const gap = 14;
   const natural = 12 + identW + gap + midW + gap + pnlW + gap + levW + 12;
-  return { identW, priceW, costW, holdW, cashW, midW, pnlW, levW, gap, natural, h: 68 };
+  return { identW, priceW, chgW, costW, holdW, cashW, midW, pnlW, levW, gap, natural, h: 68 };
 }
 
 /** 行情牌宽度只跟窗口走。数字变长只在格子里右对齐，牌子和格子都不跳 */
@@ -1856,10 +1859,12 @@ function drawQuote(box, price) {
   ctx.font = `${13 * scale}px ${HUD_FONT}`;
   ctx.fillText("蜀汉集团  002263", x, y1);
   ctx.fillStyle = pxColor;
+  ctx.textAlign = "right";
   ctx.font = `bold ${16 * scale}px ${HUD_FONT}`;
-  ctx.fillText(price.toFixed(2), x, y2);
+  ctx.fillText(price.toFixed(2), x + lay.priceW * scale, y2);
   ctx.font = `bold ${14 * scale}px ${HUD_FONT}`;
-  ctx.fillText(`${rsign}${(ret * 100).toFixed(2)}%`, x + (lay.priceW + 10) * scale, y2);
+  ctx.fillText(`${rsign}${(ret * 100).toFixed(2)}%`, x + (lay.priceW + 10 + lay.chgW) * scale, y2);
+  ctx.textAlign = "left";
   const field = 13 * scale;
   const costX = x + (lay.identW + lay.gap) * scale;
   const holdX = costX + (lay.costW + 14) * scale;
