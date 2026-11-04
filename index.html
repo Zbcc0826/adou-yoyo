@@ -966,7 +966,7 @@ function beginSplat() {
 
 /** 播报位置。落在行情牌和说明卡下面 */
 function announceAt(dx, dy, banner) {
-  const lay = layoutHud(forming ? forming.live : lastClose);
+  const lay = layoutHud();
   const occupied = Math.max(lay.quote.y + lay.quote.h, lay.help.y + lay.help.h);
   const clearTop = occupied + (banner ? 36 : 20);
   const y = clamp(H * 0.5 + dy, clearTop, Math.max(clearTop, H - 120));
@@ -1785,12 +1785,15 @@ function quoteLines(price) {
   ];
 }
 
-/** 右边那一列杠杆要多宽，两行数字才不会挤进去 */
-function leverageColumnWidth(price) {
+/** 杠杆列按最宽的写法留空，0% 和 ≥200% 来回换时列宽不变 */
+function leverageColumnWidth() {
   ctx.font = `12px ${HUD_FONT}`;
   const label = ctx.measureText("杠杆").width;
   ctx.font = `bold 16px ${HUD_FONT}`;
-  const value = ctx.measureText(leverageText(price)).width;
+  let value = 0;
+  for (const sample of ["0%", "100%", "≥200%"]) {
+    value = Math.max(value, ctx.measureText(sample).width);
+  }
   return Math.ceil(Math.max(label, value) + 8);
 }
 
@@ -1815,15 +1818,10 @@ function fitScale(parts, inner, minScale) {
   return scale;
 }
 
-/** 行情牌自然宽度。窄屏放不下说明卡时再拉满 */
-function quoteSize(price) {
-  const lines = quoteLines(price);
-  const levW = leverageColumnWidth(price);
-  let textW = 0;
-  lines.forEach((line) => {
-    textW = Math.max(textW, measureParts(line, 1));
-  });
-  const w = Math.min(W - 28, Math.ceil(12 + textW + 16 + levW + 12));
+/** 行情牌宽度只跟窗口走。数字变长只缩小字号，牌子本身不跟着跳 */
+function quoteSize() {
+  const levW = leverageColumnWidth();
+  const w = Math.min(520, W - 28);
   return { w: Math.max(220, w), h: 64, levW };
 }
 
@@ -1831,20 +1829,16 @@ function quoteSize(price) {
  * 行情牌在左上，说明卡在右上。两张并排放不下时，说明卡挪到行情牌下面靠右。
  * 次数已经到底部按钮旁，这里不再留次数卡。
  */
-function layoutHud(price) {
+function layoutHud() {
   const help = helpSize();
-  const quoteNat = quoteSize(price);
+  const quoteNat = quoteSize();
   const gap = 8;
   const top = 12;
-  let quote;
-  let helpPos;
-  if (14 + quoteNat.w + gap + help.w + 14 <= W) {
-    quote = { x: 14, y: top, w: quoteNat.w, h: quoteNat.h, levW: quoteNat.levW };
-    helpPos = { x: W - help.w - 14, y: top, w: help.w, h: help.h };
-  } else {
-    quote = { x: 14, y: top, w: W - 28, h: quoteNat.h, levW: quoteNat.levW };
-    helpPos = { x: Math.max(14, W - help.w - 14), y: top + quoteNat.h + gap, w: help.w, h: help.h };
-  }
+  const quote = { x: 14, y: top, w: quoteNat.w, h: quoteNat.h, levW: quoteNat.levW };
+  const beside = 14 + quote.w + gap + help.w + 14 <= W;
+  const helpPos = beside
+    ? { x: W - help.w - 14, y: top, w: help.w, h: help.h }
+    : { x: Math.max(14, W - help.w - 14), y: top + quote.h + gap, w: help.w, h: help.h };
   return { quote, help: helpPos };
 }
 
@@ -1898,7 +1892,7 @@ function drawDockStats() {
 /** 左上角行情牌和右上角说明。画在拳头之后，袖子从字后面穿过去 */
 function drawHud(now) {
   const price = forming ? forming.live : lastClose;
-  const lay = layoutHud(price);
+  const lay = layoutHud();
   drawQuote(lay.quote, price);
   drawHelp(lay.help);
   drawDockStats();
@@ -2709,7 +2703,7 @@ function canvasPoint(e) {
 }
 
 function helpHit(x, y) {
-  const box = layoutHud(forming ? forming.live : lastClose).help;
+  const box = layoutHud().help;
   return x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
 }
 
